@@ -3,7 +3,7 @@ import type { DataRequest, RequestHeaders, RequestTransport, ResponseHeaders, Tr
 
 export interface CacheOptions { readonly maxEntries: number; readonly ttlMs: number; }
 export interface RetryOptions { readonly maxRetries?: number; readonly sleep?: (milliseconds: number) => Promise<void>; readonly now?: () => number; }
-export interface DataClientOptions { readonly cache?: CacheOptions; readonly retry?: RetryOptions; }
+export interface DataClientOptions { readonly cache?: CacheOptions; readonly retry?: RetryOptions; readonly signal?: AbortSignal; readonly timeoutMs?: number; }
 export interface ClientDiagnostics { readonly requests: number; readonly cacheHits: number; readonly deduplicated: number; readonly retries: number; readonly failures: number; }
 export interface RawDataResponse { readonly status: number; readonly headers: ResponseHeaders; readonly text: string; }
 
@@ -16,6 +16,12 @@ function validateCache(options: CacheOptions): void {
 }
 function validateRetries(options: RetryOptions | undefined): void {
   if (options?.maxRetries !== undefined && (!Number.isInteger(options.maxRetries) || options.maxRetries < 0)) throw new DataError("validation", "retry.maxRetries must be a non-negative integer");
+}
+function validateTimeout(timeoutMs: number | undefined): void {
+  if (timeoutMs !== undefined && (!Number.isInteger(timeoutMs) || timeoutMs < 0)) throw new DataError("validation", "timeoutMs must be a non-negative integer");
+}
+function isAbortError(cause: unknown): boolean {
+  return typeof cause === "object" && cause !== null && "name" in cause && (cause as { name?: unknown }).name === "AbortError";
 }
 function headerEntries(headers: RequestHeaders | undefined, selected: readonly string[] | undefined): string[] {
   if (!headers) return [];
@@ -33,6 +39,8 @@ function responseHeaders(response: TransportResponse): ResponseHeaders { return 
 
 export class DataClient {
   private readonly cache?: CacheOptions;
+  private readonly signal?: AbortSignal;
+  private readonly timeoutMs?: number;
   private readonly retry: Required<Pick<RetryOptions, "maxRetries" | "sleep" | "now">>;
   private readonly entries = new Map<string, CacheEntry>();
   private readonly inflight = new Map<string, Promise<unknown>>();
@@ -42,7 +50,10 @@ export class DataClient {
   constructor(private readonly transport: RequestTransport, options: DataClientOptions = {}) {
     if (options.cache) validateCache(options.cache);
     validateRetries(options.retry);
+    validateTimeout(options.timeoutMs);
     this.cache = options.cache;
+    this.signal = options.signal;
+    this.timeoutMs = options.timeoutMs;
     this.retry = { maxRetries: options.retry?.maxRetries ?? 2, sleep: options.retry?.sleep ?? defaultSleep, now: options.retry?.now ?? Date.now };
   }
   diagnostics(): ClientDiagnostics { return { ...this.counters }; }
@@ -57,6 +68,7 @@ export class DataClient {
   async requestRaw(request: DataRequest, options: { readonly cache?: boolean } = {}): Promise<RawDataResponse> {
     const method = (request.method ?? "GET").toUpperCase();
     const normalized = { ...request, method };
+    validateTimeout(request.timeoutMs);
     if (options.cache && method === "GET") return this.cachedGet(normalized);
     return this.executeRaw(normalized);
   }
@@ -85,14 +97,21 @@ export class DataClient {
   private async executeRaw(request: DataRequest): Promise<RawDataResponse> {
     const method = (request.method ?? "GET").toUpperCase();
     const canRetry = method === "GET";
+    const signal = request.signal ?? this.signal;
+    const timeoutMs = request.timeoutMs ?? this.timeoutMs;
+    if (signal?.aborted) throw signal.reason ?? new DOMException("The request was aborted", "AbortError");
     let attempt = 0;
     while (true) {
       this.counters = { ...this.counters, requests: this.counters.requests + 1 };
       let response: TransportResponse;
       try {
-        response = await this.transport.request(request.url, { method, headers: request.headers, body: request.body });
+        response = await this.transport.request(request.url, { method, headers: request.headers, body: request.body, signal, timeoutMs });
       } catch (cause) {
-        if (!canRetry || attempt >= this.retry.maxRetries) {
+        if (signal?.aborted) {
+          this.counters = { ...this.counters, failures: this.counters.failures + 1 };
+          throw signal.reason ?? cause;
+        }
+        if (isAbortError(cause) || !canRetry || attempt >= this.retry.maxRetries) {
           this.counters = { ...this.counters, failures: this.counters.failures + 1 };
           if (cause instanceof DataError) throw cause;
           throw new DataError("unknown", "The transport failed before receiving a response", cause);
@@ -105,7 +124,11 @@ export class DataClient {
       const headers = responseHeaders(response);
       const text = await response.text();
       if (response.status >= 200 && response.status < 300) return { status: response.status, headers, text };
-      const error = mapHttpError(response.status, { status: response.status }, headers, this.retry.now);
+      let details: unknown;
+      if (text.trim()) {
+        try { details = JSON.parse(text); } catch { /* keep the response body out of structured details */ }
+      }
+      const error = mapHttpError(response.status, { status: response.status }, headers, this.retry.now, details);
       const retryable = canRetry && (response.status === 408 || response.status === 429 || response.status >= 500);
       if (!retryable || attempt >= this.retry.maxRetries) { this.counters = { ...this.counters, failures: this.counters.failures + 1 }; throw error; }
       attempt++;

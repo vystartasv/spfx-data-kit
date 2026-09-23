@@ -2,10 +2,13 @@ import { DataError, headerValue, parseJson } from "./errors.js";
 import { DataClient } from "./client.js";
 import type { DataResult, RequestHeaders } from "./contracts.js";
 
-export interface GraphRequestOptions { readonly method?: string; readonly headers?: RequestHeaders; readonly body?: unknown; readonly etag?: string; }
+export interface GraphRequestOptions { readonly method?: string; readonly headers?: RequestHeaders; readonly body?: unknown; readonly etag?: string; readonly signal?: AbortSignal; readonly timeoutMs?: number; }
 export interface GraphBatchRequest { readonly id: string; readonly method: string; readonly url: string; readonly headers?: RequestHeaders; readonly body?: unknown; }
 export interface GraphBatchResponse { readonly id: string; readonly status: number; readonly headers: RequestHeaders; readonly body?: unknown; readonly ok: boolean; }
 export interface GraphBatchResult { readonly responses: readonly GraphBatchResponse[]; readonly failures: readonly GraphBatchResponse[]; }
+export interface GraphPage<T> { readonly value: readonly T[]; readonly nextLink?: string; readonly deltaLink?: string; }
+export interface GraphDelta<T> { readonly value: readonly T[]; readonly deltaLink?: string; }
+export interface GraphIterationOptions { readonly maxPages?: number; readonly maxItems?: number; }
 export interface GraphAdapterOptions { readonly baseUrl?: string; }
 
 const jsonHeaders = { Accept: "application/json", "Content-Type": "application/json" };
@@ -17,6 +20,18 @@ const etagOf = (value: unknown): string | undefined => {
   return typeof etag === "string" ? etag : undefined;
 };
 const absolute = (base: string, path: string): string => /^[a-z][a-z\d+.-]*:/i.test(path) ? path : `${base.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
+const pagePayload = <T>(value: unknown): GraphPage<T> => {
+  const root = asRecord(value);
+  const rows = Array.isArray(root.value) ? root.value as T[] : [];
+  const nextLink = typeof root["@odata.nextLink"] === "string" ? root["@odata.nextLink"] : undefined;
+  const deltaLink = typeof root["@odata.deltaLink"] === "string" ? root["@odata.deltaLink"] : undefined;
+  return { value: rows, ...(nextLink === undefined ? {} : { nextLink }), ...(deltaLink === undefined ? {} : { deltaLink }) };
+};
+const validateIteration = (options: GraphIterationOptions): void => {
+  for (const [name, value] of [["maxPages", options.maxPages], ["maxItems", options.maxItems]] as const) {
+    if (value !== undefined && (!Number.isInteger(value) || value < 0)) throw new DataError("validation", `${name} must be a non-negative integer`);
+  }
+};
 
 export class GraphAdapter {
   private readonly baseUrl: string;
@@ -27,13 +42,52 @@ export class GraphAdapter {
     const headers: RequestHeaders = { ...jsonHeaders, ...options.headers, ...(options.etag === undefined ? {} : { "If-Match": options.etag }) };
     const url = absolute(this.baseUrl, path);
     if (method === "GET") {
-      const response = await this.client.requestRaw({ url, method, headers }, { cache: true });
+      const response = await this.client.requestRaw({ url, method, headers, signal: options.signal, timeoutMs: options.timeoutMs }, { cache: true });
       const value = response.text.trim() ? parseJson<T>(response.text, response.status) : undefined as T;
       return { data: value, etag: etagOf(value) ?? headerValue(response.headers, "etag") };
     }
-    const response = await this.client.requestRaw({ url, method, headers, body: options.body === undefined ? undefined : JSON.stringify(options.body) });
+    const response = await this.client.requestRaw({ url, method, headers, body: options.body === undefined ? undefined : JSON.stringify(options.body), signal: options.signal, timeoutMs: options.timeoutMs });
     const value = response.text.trim() ? parseJson<T>(response.text, response.status) : undefined as T;
     return { data: value, etag: etagOf(value) ?? headerValue(response.headers, "etag") };
+  }
+
+  async page<T>(path: string, options: GraphRequestOptions = {}): Promise<GraphPage<T>> {
+    const result = await this.request<unknown>(path, options);
+    return pagePayload<T>(result.data);
+  }
+
+  async *pages<T>(path: string, options: GraphIterationOptions & GraphRequestOptions = {}): AsyncIterable<GraphPage<T>> {
+    validateIteration(options);
+    const maxPages = options.maxPages ?? 100;
+    const maxItems = options.maxItems ?? Number.MAX_SAFE_INTEGER;
+    let url = path;
+    let pages = 0;
+    let items = 0;
+    const seen = new Set<string>();
+    while (pages < maxPages && items < maxItems && !seen.has(url)) {
+      seen.add(url);
+      const page = await this.page<T>(url, options);
+      const value = page.value.slice(0, maxItems - items);
+      items += value.length;
+      pages++;
+      yield { ...page, value };
+      if (value.length < page.value.length || !page.nextLink) break;
+      url = page.nextLink;
+    }
+  }
+
+  async *iterate<T>(path: string, options: GraphIterationOptions & GraphRequestOptions = {}): AsyncIterable<T> {
+    for await (const page of this.pages<T>(path, options)) yield* page.value;
+  }
+
+  async delta<T>(path: string, options: GraphIterationOptions & GraphRequestOptions = {}): Promise<GraphDelta<T>> {
+    const value: T[] = [];
+    let deltaLink: string | undefined;
+    for await (const page of this.pages<T>(path, options)) {
+      value.push(...page.value);
+      deltaLink = page.deltaLink ?? deltaLink;
+    }
+    return deltaLink === undefined ? { value } : { value, deltaLink };
   }
 
   async batch(requests: readonly GraphBatchRequest[]): Promise<GraphBatchResult> {

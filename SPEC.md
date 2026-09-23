@@ -19,7 +19,7 @@ Dependency-free TypeScript ESM library for injected request transport, typed Sha
 - Errors: `DataError`, `headerValue`, `retryAfterMilliseconds`, `mapHttpError`, `mapSharePointError`, `parseJson`
 - Client: `DataClient`, `requestCacheKey`, cache/retry/diagnostic option types
 - SharePoint: `SharePointRestAdapter`, URL helpers, CRUD/query/ETag/batch types
-- Graph: `GraphAdapter`, request/batch option/result types
+- Graph: `GraphAdapter`, request/page/delta/batch option/result types
 - Manifest: `capabilityManifest`, `CAPABILITY_MANIFEST`
 
 §V
@@ -33,6 +33,9 @@ V7: SharePoint writes use POST/DELETE, optional `IF-MATCH`, invalidate list URL 
 V8: SharePoint batch children accept GET only; results preserve child status, headers, body, id, and `ok`.
 V9: Graph batch child URLs are relative, ids are unique and non-empty, and request count ≤ 20; results preserve child failures.
 V10: Build output contains only current `src/**/*.ts` compilation; package exports and files contain no PnPjs/local artifacts.
+V11: Transport and client requests forward optional `AbortSignal` and non-negative `timeoutMs`; aborted requests do not retry; timeout enforcement remains host-owned.
+V12: `DataError.kind` values remain stable; structured service `code` and object `details` are retained when an HTTP error body provides them.
+V13: Graph page/delta iteration validates non-negative bounds, never requests after `maxPages` or `maxItems`, truncates the final page to `maxItems`, and stops repeated links.
 
 §T
 id|status|task|cites
@@ -41,6 +44,8 @@ T2|x|implement injected transport client, cache, invalidation, diagnostics, retr
 T3|x|implement SharePoint REST CRUD, paging, queries, ETags, and GET batches|V6-V8
 T4|x|implement Graph requests, JSON batches, and capability manifest|V1,V9,I.api
 T5|x|restore concise docs and remove stale PnPjs/local package artifacts|V10
+T6|x|add PnP capability matrix and Graph page/delta iteration|V9,V13
+T7|x|forward cancellation/deadline options and retain structured HTTP error details|V11,V12
 
 §B
 id|date|cause|fix

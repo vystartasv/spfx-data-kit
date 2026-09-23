@@ -1,5 +1,7 @@
 import type { ErrorKind, RequestHeaders, ResponseHeaders } from "./contracts.js";
 
+export type ErrorDetails = Readonly<Record<string, unknown>>;
+
 export class DataError extends Error {
   readonly name = "DataError";
 
@@ -9,6 +11,8 @@ export class DataError extends Error {
     public readonly cause?: unknown,
     public readonly status?: number,
     public readonly retryAfterMs?: number,
+    public readonly code?: string,
+    public readonly details?: ErrorDetails,
   ) {
     super(message);
     Object.setPrototypeOf(this, new.target.prototype);
@@ -33,15 +37,27 @@ export function retryAfterMilliseconds(value: string | undefined, now = Date.now
   return Number.isNaN(date) ? undefined : Math.max(0, date - now());
 }
 
-export function mapHttpError(status: number, cause?: unknown, headers?: ResponseHeaders, now = Date.now): DataError {
+function asDetails(value: unknown): ErrorDetails | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value as ErrorDetails : undefined;
+}
+
+function detailCode(details: ErrorDetails | undefined): string | undefined {
+  const error = asDetails(details?.error);
+  const code = error?.code ?? details?.code;
+  return typeof code === "string" ? code : undefined;
+}
+
+export function mapHttpError(status: number, cause?: unknown, headers?: ResponseHeaders, now = Date.now, details?: unknown): DataError {
   const retryAfter = retryAfterMilliseconds(headerValue(headers, "retry-after"), now);
-  if (status === 404) return new DataError("not-found", "The requested resource was not found", cause, status);
-  if (status === 401 || status === 403) return new DataError("permission", "The request is not permitted", cause, status);
-  if (status === 409 || status === 412) return new DataError("conflict", "The resource changed before the request completed", cause, status);
-  if (status === 400 || status === 422) return new DataError("validation", "The service rejected the request", cause, status);
-  if (status === 429) return new DataError("throttled", "The service throttled the request", cause, status, retryAfter);
-  if (status === 408 || status >= 500) return new DataError("transient", "The service failed temporarily", cause, status, retryAfter);
-  return new DataError("unknown", "The service returned an unexpected response", cause, status, retryAfter);
+  const structured = asDetails(details);
+  const code = detailCode(structured);
+  if (status === 404) return new DataError("not-found", "The requested resource was not found", cause, status, undefined, code, structured);
+  if (status === 401 || status === 403) return new DataError("permission", "The request is not permitted", cause, status, undefined, code, structured);
+  if (status === 409 || status === 412) return new DataError("conflict", "The resource changed before the request completed", cause, status, undefined, code, structured);
+  if (status === 400 || status === 422) return new DataError("validation", "The service rejected the request", cause, status, undefined, code, structured);
+  if (status === 429) return new DataError("throttled", "The service throttled the request", cause, status, retryAfter, code, structured);
+  if (status === 408 || status >= 500) return new DataError("transient", "The service failed temporarily", cause, status, retryAfter, code, structured);
+  return new DataError("unknown", "The service returned an unexpected response", cause, status, retryAfter, code, structured);
 }
 
 export function mapSharePointError(cause: unknown): DataError {

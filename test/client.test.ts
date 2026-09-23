@@ -71,3 +71,35 @@ test("DataClient invalidation prevents an in-flight GET from repopulating cache"
   assert.deepEqual(await client.get("https://example.test/items"), { calls: 2 });
   assert.equal(calls, 2);
 });
+
+test("DataClient forwards signal and timeout and does not retry an aborted request", async () => {
+  const controller = new AbortController();
+  const calls: { signal?: AbortSignal; timeoutMs?: number }[] = [];
+  const client = new DataClient({ request: async (_url, options) => {
+    calls.push(options);
+    throw controller.signal.reason ?? new DOMException("aborted", "AbortError");
+  } }, { retry: { maxRetries: 2 }, signal: controller.signal, timeoutMs: 250 });
+  controller.abort(new Error("cancelled"));
+  await assert.rejects(client.get("https://example.test/abort"), /cancelled/);
+  assert.deepEqual(calls, []);
+
+  const active = new AbortController();
+  const transport = { request: async (_url: string, options: { signal?: AbortSignal; timeoutMs?: number }) => {
+    calls.push(options);
+    return { status: 200, text: async () => "{}" };
+  } };
+  await new DataClient(transport, { signal: active.signal, timeoutMs: 250 }).get("https://example.test/active");
+  assert.equal(calls.at(-1)?.signal, active.signal);
+  assert.equal(calls.at(-1)?.timeoutMs, 250);
+});
+
+test("DataClient retains structured HTTP error details", async () => {
+  const client = new DataClient({ request: async () => ({
+    status: 400,
+    text: async () => JSON.stringify({ error: { code: "InvalidRequest", message: "bad input" }, requestId: "req-1" }),
+  }) }, { retry: { maxRetries: 0 } });
+  await assert.rejects(client.get("https://example.test/error"), (error: unknown) => error instanceof DataError
+    && error.kind === "validation"
+    && error.code === "InvalidRequest"
+    && error.details?.requestId === "req-1");
+});

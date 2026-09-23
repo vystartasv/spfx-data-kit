@@ -71,3 +71,34 @@ test("Graph batch rejects a response that omits a child", async () => {
   const graph = new GraphAdapter(new DataClient(transport, { retry: { maxRetries: 0 } }));
   await assert.rejects(graph.batch([request("ok"), request("missing")]), (error: unknown) => error instanceof DataError && error.kind === "unknown");
 });
+
+test("Graph paging stops before requesting after maxPages or maxItems", async () => {
+  const transport = new ScriptedTransport([
+    { status: 200, body: JSON.stringify({ value: [{ id: 1 }, { id: 2 }], "@odata.nextLink": "/users?page=2" }) },
+  ]);
+  const graph = new GraphAdapter(new DataClient(transport, { retry: { maxRetries: 0 } }));
+  const pages = [];
+  for await (const page of graph.pages<{ id: number }>("/users", { maxPages: 1 })) pages.push(page);
+  assert.deepEqual(pages, [{ value: [{ id: 1 }, { id: 2 }], nextLink: "/users?page=2" }]);
+  assert.equal(transport.calls.length, 1);
+
+  const limited = new ScriptedTransport([{ status: 200, body: JSON.stringify({ value: [{ id: 1 }, { id: 2 }], "@odata.nextLink": "/users?page=2" }) }]);
+  const limitedGraph = new GraphAdapter(new DataClient(limited, { retry: { maxRetries: 0 } }));
+  const items: { id: number }[] = [];
+  for await (const item of limitedGraph.iterate<{ id: number }>("/users", { maxItems: 1 })) items.push(item);
+  assert.deepEqual(items, [{ id: 1 }]);
+  assert.equal(limited.calls.length, 1);
+});
+
+test("Graph delta collects pages and preserves the delta link", async () => {
+  const transport = new ScriptedTransport([
+    { status: 200, body: JSON.stringify({ value: [{ id: 1 }], "@odata.nextLink": "/users/delta?page=2" }) },
+    { status: 200, body: JSON.stringify({ value: [{ id: 2 }], "@odata.deltaLink": "https://graph.microsoft.com/v1.0/users/delta?$deltatoken=next" }) },
+  ]);
+  const graph = new GraphAdapter(new DataClient(transport, { retry: { maxRetries: 0 } }));
+  assert.deepEqual(await graph.delta<{ id: number }>("/users/delta", { maxPages: 2 }), {
+    value: [{ id: 1 }, { id: 2 }],
+    deltaLink: "https://graph.microsoft.com/v1.0/users/delta?$deltatoken=next",
+  });
+  assert.equal(transport.calls.length, 2);
+});
