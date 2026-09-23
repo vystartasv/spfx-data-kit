@@ -9,6 +9,7 @@ export interface GraphBatchResult { readonly responses: readonly GraphBatchRespo
 export interface GraphAdapterOptions { readonly baseUrl?: string; }
 
 const jsonHeaders = { Accept: "application/json", "Content-Type": "application/json" };
+const batchMethods = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
 const asRecord = (value: unknown): Record<string, unknown> => typeof value === "object" && value !== null ? value as Record<string, unknown> : {};
 const etagOf = (value: unknown): string | undefined => {
   const row = asRecord(value);
@@ -26,8 +27,9 @@ export class GraphAdapter {
     const headers: RequestHeaders = { ...jsonHeaders, ...options.headers, ...(options.etag === undefined ? {} : { "If-Match": options.etag }) };
     const url = absolute(this.baseUrl, path);
     if (method === "GET") {
-      const value = await this.client.get<T>(url, { headers });
-      return { data: value, etag: etagOf(value) };
+      const response = await this.client.requestRaw({ url, method, headers }, { cache: true });
+      const value = response.text.trim() ? parseJson<T>(response.text, response.status) : undefined as T;
+      return { data: value, etag: etagOf(value) ?? headerValue(response.headers, "etag") };
     }
     const response = await this.client.requestRaw({ url, method, headers, body: options.body === undefined ? undefined : JSON.stringify(options.body) });
     const value = response.text.trim() ? parseJson<T>(response.text, response.status) : undefined as T;
@@ -38,8 +40,9 @@ export class GraphAdapter {
     if (requests.length > 20) throw new DataError("validation", "Graph JSON batches support at most 20 requests");
     const ids = new Set<string>();
     for (const request of requests) {
-      if (!request.id || ids.has(request.id)) throw new DataError("validation", "Graph batch request ids must be non-empty and unique");
-      if (/^[a-z][a-z\d+.-]*:/i.test(request.url)) throw new DataError("validation", "Graph batch child URLs must be relative");
+      if (!request.id || !request.id.trim() || ids.has(request.id)) throw new DataError("validation", "Graph batch request ids must be non-empty and unique");
+      if (!request.url || !request.url.trim() || request.url.startsWith("//") || /^[a-z][a-z\d+.-]*:/i.test(request.url)) throw new DataError("validation", "Graph batch child URLs must be relative");
+      if (!batchMethods.has(request.method.toUpperCase())) throw new DataError("validation", "Graph batch request methods are invalid");
       ids.add(request.id);
     }
     const response = await this.client.requestRaw({
@@ -50,13 +53,17 @@ export class GraphAdapter {
     });
     const payload = asRecord(parseJson<unknown>(response.text, response.status));
     if (!Array.isArray(payload.responses)) throw new DataError("unknown", "Graph batch response did not contain responses", payload, response.status);
+    const responseIds = new Set<string>();
     const responses = payload.responses.map((value): GraphBatchResponse => {
       const item = asRecord(value);
       const id = typeof item.id === "string" ? item.id : "";
       const status = typeof item.status === "number" ? item.status : 0;
+      if (!id || !ids.has(id) || responseIds.has(id) || !Number.isInteger(status) || status < 100 || status > 599) throw new DataError("unknown", "Graph batch response contained an invalid child response", payload, response.status);
+      responseIds.add(id);
       const headers = asRecord(item.headers) as RequestHeaders;
       return { id, status, headers, body: item.body, ok: status >= 200 && status < 300 };
     });
+    if (responseIds.size !== ids.size) throw new DataError("unknown", "Graph batch response did not contain every child response", payload, response.status);
     return { responses, failures: responses.filter((item) => !item.ok) };
   }
 }

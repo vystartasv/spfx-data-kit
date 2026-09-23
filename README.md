@@ -22,7 +22,7 @@ The root export includes:
 - `DataError` and HTTP/JSON error helpers;
 - `DataClient` with GET deduplication, bounded in-memory TTL caching, invalidation, diagnostics, and bounded GET retries;
 - `SharePointRestAdapter` for list paging, query construction, ETags, CRUD, and GET-only batch result parsing;
-- `GraphAdapter` for Graph requests and JSON batch result parsing;
+- `GraphAdapter` for Graph requests with cached/deduplicated GETs, response-header ETags, and JSON batch result parsing;
 - `capabilityManifest` and `CAPABILITY_MANIFEST`.
 
 The capability manifest is also available from `spfx-data-kit/capabilities`.

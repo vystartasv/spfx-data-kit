@@ -1,6 +1,6 @@
-import type { RequestTransport, TransportRequestOptions, TransportResponse } from "../src/index.js";
+import type { RequestTransport, TransportRequestOptions, TransportResponse, ResponseHeaders } from "../src/index.js";
 
-export type Reply = { status: number; body?: string; headers?: Record<string, string> };
+export type Reply = { status: number; body?: string; headers?: ResponseHeaders };
 
 export class ScriptedTransport implements RequestTransport {
   readonly calls: { url: string; options: TransportRequestOptions }[] = [];

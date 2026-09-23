@@ -31,7 +31,7 @@ export function sharePointItemUrl(siteUrl: string, listTitle: string, id: number
 
 function validateBounds(query: ListQuery | undefined): void {
   for (const [name, value] of [["pageSize", query?.pageSize], ["maxPages", query?.maxPages]] as const) {
-    if (value !== undefined && (!Number.isInteger(value) || value < 0 || (name === "pageSize" && value < 1))) throw new DataError("validation", `${name} must be a positive integer`);
+    if (value !== undefined && (!Number.isInteger(value) || value < 0 || (name === "pageSize" && value < 1))) throw new DataError("validation", `${name} must be ${name === "maxPages" ? "a non-negative" : "a positive"} integer`);
   }
   if (query?.top !== undefined && (!Number.isInteger(query.top) || query.top < 0)) throw new DataError("validation", "top must be a non-negative integer");
 }
@@ -102,10 +102,10 @@ export class SharePointRestAdapter<TEntity = Row, TCreate = Partial<TEntity>, TU
     for (const key of Object.keys(this.options.map) as (keyof TEntity)[]) { const field = this.options.map[key]; if (field) output[String(key)] = raw[field]; }
     return output as TEntity;
   }
-  private result(raw: Row): DataResult<TEntity> { const etag = rowEtag(raw); return etag === undefined ? { data: this.map(raw) } : { data: this.map(raw), etag }; }
+  private result(raw: Row, responseEtag?: string): DataResult<TEntity> { const etag = rowEtag(raw) ?? responseEtag; return etag === undefined ? { data: this.map(raw) } : { data: this.map(raw), etag }; }
   private async read(url: string): Promise<DataResult<TEntity>> {
     const response = await this.client.requestRaw({ url, method: "GET", headers: { Accept: jsonAccept } });
-    return this.result(itemRow(parseJson<unknown>(response.text, response.status)));
+    return this.result(itemRow(parseJson<unknown>(response.text, response.status)), headerValue(response.headers, "etag"));
   }
   async list(query: ListQuery = {}): Promise<ListResult<TEntity>> {
     validateBounds(query);
@@ -114,7 +114,10 @@ export class SharePointRestAdapter<TEntity = Row, TCreate = Partial<TEntity>, TU
     const etags: Record<string, string> = {};
     let url = queryUrl(this.base, query);
     let pages = 0;
+    const seenUrls = new Set<string>();
     while (url) {
+      if (seenUrls.has(url)) break;
+      seenUrls.add(url);
       const response = await this.client.requestRaw({ url, method: "GET", headers: { Accept: jsonAccept } });
       const payload = parseJson<unknown>(response.text, response.status);
       for (const raw of pageRows(payload)) {
@@ -157,7 +160,8 @@ export class SharePointRestAdapter<TEntity = Row, TCreate = Partial<TEntity>, TU
     const lines: string[] = [];
     for (const request of requests) {
       const url = /^[a-z][a-z\d+.-]*:/i.test(request.url) ? request.url : new URL(request.url, this.options.siteUrl).toString();
-      lines.push(`--${boundary}`, "Content-Type: application/http", "Content-Transfer-Encoding: binary", "", `GET ${url} HTTP/1.1`, `Accept: ${request.headers?.Accept ?? jsonAccept}`, "", "");
+      const childHeaders = Object.keys(request.headers ?? {}).some((name) => name.toLowerCase() === "accept") ? request.headers! : { Accept: jsonAccept, ...request.headers };
+      lines.push(`--${boundary}`, "Content-Type: application/http", "Content-Transfer-Encoding: binary", "", `GET ${url} HTTP/1.1`, ...Object.entries(childHeaders).map(([name, value]) => `${name}: ${value}`), "", "");
     }
     lines.push(`--${boundary}--`, "");
     const response = await this.client.requestRaw({ url: `${this.options.siteUrl.replace(/\/+$/, "")}/_api/$batch`, method: "POST", headers: { Accept: jsonAccept, "Content-Type": `multipart/mixed; boundary=${boundary}` }, body: lines.join("\r\n") });

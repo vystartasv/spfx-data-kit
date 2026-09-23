@@ -1,11 +1,11 @@
 import { DataError, mapHttpError } from "./errors.js";
-import type { DataRequest, RequestHeaders, RequestTransport, TransportResponse } from "./contracts.js";
+import type { DataRequest, RequestHeaders, RequestTransport, ResponseHeaders, TransportResponse } from "./contracts.js";
 
 export interface CacheOptions { readonly maxEntries: number; readonly ttlMs: number; }
 export interface RetryOptions { readonly maxRetries?: number; readonly sleep?: (milliseconds: number) => Promise<void>; readonly now?: () => number; }
 export interface DataClientOptions { readonly cache?: CacheOptions; readonly retry?: RetryOptions; }
 export interface ClientDiagnostics { readonly requests: number; readonly cacheHits: number; readonly deduplicated: number; readonly retries: number; readonly failures: number; }
-export interface RawDataResponse { readonly status: number; readonly headers: RequestHeaders; readonly text: string; }
+export interface RawDataResponse { readonly status: number; readonly headers: ResponseHeaders; readonly text: string; }
 
 type CacheEntry = { expiresAt: number; value: unknown };
 const defaultSleep = (milliseconds: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -29,13 +29,14 @@ export function requestCacheKey(request: DataRequest): string {
   const method = (request.method ?? "GET").toUpperCase();
   return JSON.stringify([method, request.url, request.body ?? "", headerEntries(request.headers, request.cacheKeyHeaders)]);
 }
-function responseHeaders(response: TransportResponse): RequestHeaders { return response.headers ?? {}; }
+function responseHeaders(response: TransportResponse): ResponseHeaders { return response.headers ?? {}; }
 
 export class DataClient {
   private readonly cache?: CacheOptions;
   private readonly retry: Required<Pick<RetryOptions, "maxRetries" | "sleep" | "now">>;
   private readonly entries = new Map<string, CacheEntry>();
   private readonly inflight = new Map<string, Promise<unknown>>();
+  private cacheVersion = 0;
   private counters: ClientDiagnostics = { requests: 0, cacheHits: 0, deduplicated: 0, retries: 0, failures: 0 };
 
   constructor(private readonly transport: RequestTransport, options: DataClientOptions = {}) {
@@ -50,26 +51,38 @@ export class DataClient {
   async request<T>(request: DataRequest): Promise<T> {
     const normalized = { ...request, method: (request.method ?? "GET").toUpperCase() };
     if (normalized.method !== "GET") return this.parse<T>(await this.requestRaw(normalized));
-    const key = requestCacheKey(normalized);
-    const now = this.retry.now();
-    const cached = this.entries.get(key);
-    if (cached && cached.expiresAt > now) { this.counters = { ...this.counters, cacheHits: this.counters.cacheHits + 1 }; return cached.value as T; }
-    if (cached) this.entries.delete(key);
-    const pending = this.inflight.get(key);
-    if (pending) { this.counters = { ...this.counters, deduplicated: this.counters.deduplicated + 1 }; return pending as Promise<T>; }
-    const operation = this.requestRaw(normalized).then((response) => this.parse<T>(response));
-    this.inflight.set(key, operation);
-    try {
-      const value = await operation;
-      if (this.cache) {
-        this.entries.set(key, { value, expiresAt: this.retry.now() + this.cache.ttlMs });
-        while (this.entries.size > this.cache.maxEntries) this.entries.delete(this.entries.keys().next().value as string);
-      }
-      return value;
-    } finally { this.inflight.delete(key); }
+    return this.parse<T>(await this.requestRaw(normalized, { cache: true }));
   }
 
-  async requestRaw(request: DataRequest): Promise<RawDataResponse> {
+  async requestRaw(request: DataRequest, options: { readonly cache?: boolean } = {}): Promise<RawDataResponse> {
+    const method = (request.method ?? "GET").toUpperCase();
+    const normalized = { ...request, method };
+    if (options.cache && method === "GET") return this.cachedGet(normalized);
+    return this.executeRaw(normalized);
+  }
+
+  private async cachedGet(request: DataRequest): Promise<RawDataResponse> {
+    const key = requestCacheKey(request);
+    const now = this.retry.now();
+    const cached = this.entries.get(key);
+    if (cached && cached.expiresAt > now) { this.counters = { ...this.counters, cacheHits: this.counters.cacheHits + 1 }; return cached.value as RawDataResponse; }
+    if (cached) this.entries.delete(key);
+    const pending = this.inflight.get(key);
+    if (pending) { this.counters = { ...this.counters, deduplicated: this.counters.deduplicated + 1 }; return pending as Promise<RawDataResponse>; }
+    const cacheVersion = this.cacheVersion;
+    const operation = this.executeRaw(request);
+    this.inflight.set(key, operation);
+    try {
+      const response = await operation;
+      if (this.cache && cacheVersion === this.cacheVersion) {
+        this.entries.set(key, { value: response, expiresAt: this.retry.now() + this.cache.ttlMs });
+        while (this.entries.size > this.cache.maxEntries) this.entries.delete(this.entries.keys().next().value as string);
+      }
+      return response;
+    } finally { if (this.inflight.get(key) === operation) this.inflight.delete(key); }
+  }
+
+  private async executeRaw(request: DataRequest): Promise<RawDataResponse> {
     const method = (request.method ?? "GET").toUpperCase();
     const canRetry = method === "GET";
     let attempt = 0;
@@ -105,25 +118,27 @@ export class DataClient {
     const exact = typeof target === "string" && mode === "key" ? target : typeof target === "object" ? target.key : undefined;
     const prefix = typeof target === "string" && mode === "prefix" ? target : typeof target === "object" ? target.prefix : undefined;
     if (exact === undefined && prefix === undefined) throw new DataError("validation", "invalidate requires a key or prefix");
-    let removed = 0;
-    for (const key of this.entries.keys()) if ((exact !== undefined && key === exact) || (prefix !== undefined && key.startsWith(prefix))) { this.entries.delete(key); removed++; }
-    return removed;
+    return this.invalidateMatching((key) => (exact !== undefined && key === exact) || (prefix !== undefined && key.startsWith(prefix)));
   }
   invalidateKey(key: string): number { return this.invalidate(key, "key"); }
   invalidatePrefix(prefix: string): number { return this.invalidate(prefix, "prefix"); }
   invalidateUrl(url: string): number {
-    let removed = 0;
-    for (const key of this.entries.keys()) { try { if ((JSON.parse(key) as unknown[])[1] === url) { this.entries.delete(key); removed++; } } catch { /* internal key */ } }
-    return removed;
+    return this.invalidateMatching((key) => this.cacheUrl(key) === url);
   }
   invalidateUrlPrefix(prefix: string): number {
+    return this.invalidateMatching((key) => this.cacheUrl(key)?.startsWith(prefix) ?? false);
+  }
+  clearCache(): number { const count = this.entries.size; this.entries.clear(); this.cacheVersion++; return count; }
+  private invalidateMatching(matches: (key: string) => boolean): number {
+    this.cacheVersion++;
     let removed = 0;
-    for (const key of this.entries.keys()) {
-      try { if (String((JSON.parse(key) as unknown[])[1]).startsWith(prefix)) { this.entries.delete(key); removed++; } } catch { /* internal key */ }
-    }
+    for (const key of this.entries.keys()) if (matches(key)) { this.entries.delete(key); removed++; }
+    for (const key of this.inflight.keys()) if (matches(key)) this.inflight.delete(key);
     return removed;
   }
-  clearCache(): number { const count = this.entries.size; this.entries.clear(); return count; }
+  private cacheUrl(key: string): string | undefined {
+    try { return String((JSON.parse(key) as unknown[])[1]); } catch { return undefined; }
+  }
   private parse<T>(response: RawDataResponse): T {
     if (response.status === 204 || response.text.trim() === "") return undefined as T;
     try { return JSON.parse(response.text) as T; } catch (cause) { throw new DataError("unknown", "The service returned invalid JSON", cause, response.status); }

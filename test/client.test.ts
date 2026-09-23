@@ -51,3 +51,23 @@ test("DataClient exposes throttled failures after retry budget is exhausted", as
   const client = new DataClient({ request: async () => ({ status: 429, headers: {}, text: async () => "" }) }, { retry: { maxRetries: 0 } });
   await assert.rejects(client.get("https://example.test/limited"), (error: unknown) => error instanceof DataError && error.kind === "throttled" && error.status === 429);
 });
+
+test("DataClient invalidation prevents an in-flight GET from repopulating cache", async () => {
+  let calls = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const transport: RequestTransport = {
+    request: async () => {
+      calls++;
+      if (calls === 1) await gate;
+      return { status: 200, text: async () => JSON.stringify({ calls }) };
+    },
+  };
+  const client = new DataClient(transport, { cache: { maxEntries: 2, ttlMs: 1_000 } });
+  const first = client.get<{ calls: number }>("https://example.test/items");
+  assert.equal(client.invalidateUrl("https://example.test/items"), 0);
+  release();
+  await first;
+  assert.deepEqual(await client.get("https://example.test/items"), { calls: 2 });
+  assert.equal(calls, 2);
+});

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DataClient, SharePointRestAdapter } from "../src/index.js";
+import { DataClient, SharePointRestAdapter, sharePointListItemsUrl } from "../src/index.js";
 import { ScriptedTransport } from "./helpers.js";
 
 type Todo = { id: number; title: string };
@@ -11,6 +11,10 @@ const adapter = (transport: ScriptedTransport) => new SharePointRestAdapter<Todo
   map: { id: "Id", title: "Title" },
   createMap: (input) => ({ Title: input.title }),
   updateMap: (input) => ({ Title: input.title }),
+});
+
+test("SharePoint list URLs escape OData quotes and URL characters", () => {
+  assert.equal(sharePointListItemsUrl("https://tenant.test/sites/demo", "O'Brien / 100%"), "https://tenant.test/sites/demo/_api/web/lists/getbytitle('O''Brien%20%2F%20100%25')/items");
 });
 
 test("SharePoint adapter builds queries, follows pages, caps items, and returns ETags", async () => {
@@ -40,6 +44,21 @@ test("SharePoint adapter sends ETags and re-reads after update", async () => {
   assert.deepEqual(result, { data: { id: 7, title: "new" }, etag: "\"2\"" });
 });
 
+test("SharePoint item reads accept ETags from response headers", async () => {
+  const transport = new ScriptedTransport([{ status: 200, headers: new Headers([["ETag", '"header"']]), body: JSON.stringify({ d: { Id: 7, Title: "read" } }) }]);
+  assert.deepEqual(await adapter(transport).get(7), { data: { id: 7, title: "read" }, etag: '"header"' });
+});
+
+test("SharePoint paging stops when a next link repeats", async () => {
+  const link = "/sites/demo/_api/web/lists/getbytitle('Todo''s')/items?skiptoken=repeat";
+  const transport = new ScriptedTransport([
+    { status: 200, body: JSON.stringify({ value: [{ Id: 1, Title: "one" }], "@odata.nextLink": link }) },
+    { status: 200, body: JSON.stringify({ value: [{ Id: 2, Title: "two" }], "@odata.nextLink": link }) },
+  ]);
+  assert.deepEqual((await adapter(transport).list()).data, [{ id: 1, title: "one" }, { id: 2, title: "two" }]);
+  assert.equal(transport.calls.length, 2);
+});
+
 test("SharePoint adapter parses successful and failed batch children", async () => {
   const boundary = "batch_test";
   const body = [
@@ -63,10 +82,11 @@ test("SharePoint adapter parses successful and failed batch children", async () 
     "",
   ].join("\r\n");
   const transport = new ScriptedTransport([{ status: 200, headers: { "Content-Type": `multipart/mixed; boundary=${boundary}` }, body }]);
-  const result = await adapter(transport).batch([{ id: "one", method: "GET", url: "/items(1)" }, { id: "two", method: "GET", url: "/items(2)" }], boundary);
+  const result = await adapter(transport).batch([{ id: "one", method: "GET", url: "/items(1)", headers: { Prefer: "return=minimal" } }, { id: "two", method: "GET", url: "/items(2)" }], boundary);
   assert.deepEqual(result.responses.map(({ id, status, ok, body: child }) => ({ id, status, ok, body: child })), [
     { id: "one", status: 200, ok: true, body: { Id: 1 } },
     { id: "two", status: 404, ok: false, body: { error: { code: "missing" } } },
   ]);
   assert.equal(result.failures.length, 1);
+  assert.match(String(transport.calls[0].options.body), /Prefer: return=minimal/);
 });

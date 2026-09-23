@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DataClient, DataError, GraphAdapter } from "../src/index.js";
+import type { RequestTransport, TransportResponse } from "../src/index.js";
 import { ScriptedTransport } from "./helpers.js";
 
 const request = (id: string) => ({ id, method: "GET", url: `/users/${id}` });
@@ -25,4 +26,48 @@ test("Graph adapter returns child failures without hiding successful children", 
   ]);
   assert.deepEqual(result.failures.map(({ id, body }) => ({ id, body })), [{ id: "bad", body: { error: { code: "Forbidden" } } }]);
   assert.equal(transport.calls[0].options.method, "POST");
+});
+
+test("Graph GET preserves response headers through cache and deduplication", async () => {
+  let calls = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const transport: RequestTransport = {
+    async request(): Promise<TransportResponse> {
+      calls++;
+      await gate;
+      return { status: 200, headers: new Headers([["ETag", '"header"']]), text: async () => JSON.stringify({ id: "1" }) };
+    },
+  };
+  const client = new DataClient(transport, { cache: { maxEntries: 2, ttlMs: 1_000 }, retry: { maxRetries: 0 } });
+  const graph = new GraphAdapter(client);
+  const first = graph.request<{ id: string }>("/me");
+  const second = graph.request<{ id: string }>("/me");
+  release();
+  assert.deepEqual(await Promise.all([first, second]), [
+    { data: { id: "1" }, etag: '"header"' },
+    { data: { id: "1" }, etag: '"header"' },
+  ]);
+  assert.equal(calls, 1);
+  assert.equal(client.diagnostics().deduplicated, 1);
+  assert.deepEqual(await graph.request<{ id: string }>("/me"), { data: { id: "1" }, etag: '"header"' });
+  assert.equal(client.diagnostics().cacheHits, 1);
+});
+
+test("Graph batch validates relative URLs and methods", async () => {
+  const transport = new ScriptedTransport([]);
+  const graph = new GraphAdapter(new DataClient(transport, { retry: { maxRetries: 0 } }));
+  for (const invalid of [
+    { id: " ", method: "GET", url: "/me" },
+    { id: "one", method: "", url: "/me" },
+    { id: "one", method: "GET", url: "//other.example/me" },
+    { id: "one", method: "GET", url: "" },
+  ]) await assert.rejects(graph.batch([invalid]), (error: unknown) => error instanceof DataError && error.kind === "validation");
+  assert.equal(transport.calls.length, 0);
+});
+
+test("Graph batch rejects a response that omits a child", async () => {
+  const transport = new ScriptedTransport([{ status: 200, body: JSON.stringify({ responses: [{ id: "ok", status: 200, headers: {}, body: {} }] }) }]);
+  const graph = new GraphAdapter(new DataClient(transport, { retry: { maxRetries: 0 } }));
+  await assert.rejects(graph.batch([request("ok"), request("missing")]), (error: unknown) => error instanceof DataError && error.kind === "unknown");
 });

@@ -1,4 +1,4 @@
-import type { ErrorKind, RequestHeaders } from "./contracts.js";
+import type { ErrorKind, RequestHeaders, ResponseHeaders } from "./contracts.js";
 
 export class DataError extends Error {
   readonly name = "DataError";
@@ -15,12 +15,15 @@ export class DataError extends Error {
   }
 }
 
-export function headerValue(headers: RequestHeaders | undefined, name: string): string | undefined {
+export function headerValue(headers: ResponseHeaders | undefined, name: string): string | undefined {
   if (!headers) return undefined;
+  if (typeof (headers as HeaderCollectionLike).get === "function") return (headers as HeaderCollectionLike).get(name) ?? undefined;
   const wanted = name.toLowerCase();
   const key = Object.keys(headers).find((candidate) => candidate.toLowerCase() === wanted);
-  return key === undefined ? undefined : headers[key];
+  return key === undefined ? undefined : (headers as RequestHeaders)[key];
 }
+
+type HeaderCollectionLike = { get(name: string): string | null };
 
 export function retryAfterMilliseconds(value: string | undefined, now = Date.now): number | undefined {
   if (value === undefined) return undefined;
@@ -30,7 +33,7 @@ export function retryAfterMilliseconds(value: string | undefined, now = Date.now
   return Number.isNaN(date) ? undefined : Math.max(0, date - now());
 }
 
-export function mapHttpError(status: number, cause?: unknown, headers?: RequestHeaders, now = Date.now): DataError {
+export function mapHttpError(status: number, cause?: unknown, headers?: ResponseHeaders, now = Date.now): DataError {
   const retryAfter = retryAfterMilliseconds(headerValue(headers, "retry-after"), now);
   if (status === 404) return new DataError("not-found", "The requested resource was not found", cause, status);
   if (status === 401 || status === 403) return new DataError("permission", "The request is not permitted", cause, status);

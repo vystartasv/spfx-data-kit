@@ -1,8 +1,13 @@
 export type ErrorKind = "validation" | "not-found" | "conflict" | "permission" | "transient" | "throttled" | "unknown";
 
 export interface RequestHeaders { readonly [name: string]: string; }
+export interface HeaderCollection {
+  get(name: string): string | null;
+  forEach(callback: (value: string, name: string) => void): void;
+}
+export type ResponseHeaders = RequestHeaders | HeaderCollection;
 export interface TransportRequestOptions { readonly method: string; readonly headers?: RequestHeaders; readonly body?: string; }
-export interface TransportResponse { readonly status: number; readonly headers?: RequestHeaders; text(): Promise<string>; }
+export interface TransportResponse { readonly status: number; readonly headers?: ResponseHeaders; text(): Promise<string>; }
 
 /** Host boundary: SPFx, fetch, tests, or another authenticated runtime can implement it. */
 export interface RequestTransport { request(url: string, options: TransportRequestOptions): Promise<TransportResponse>; }

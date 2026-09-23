@@ -25,7 +25,7 @@ Dependency-free TypeScript ESM library for injected request transport, typed Sha
 §V
 V1: Root export includes contracts, errors, client, SharePoint, Graph, and manifest APIs.
 V2: `RequestTransport` remains sole host boundary for request execution.
-V3: GET requests support in-flight deduplication; configured cache enforces positive `maxEntries` and `ttlMs`; cache invalidation removes matching entries.
+V3: GET requests support in-flight deduplication; configured cache enforces positive `maxEntries` and `ttlMs`; metadata-aware GETs retain response headers; cache invalidation removes matching entries.
 V4: Only GET requests retry; retry count is bounded; non-GET requests never retry automatically.
 V5: HTTP statuses map to stable `DataError.kind` values; `cause`, `status`, and retry delay remain available where supplied.
 V6: SharePoint list reads support select, expand, filter, orderBy, top, pageSize, maxPages, next links, mapped entities, and per-item ETags.
