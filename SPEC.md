@@ -11,7 +11,7 @@ Dependency-free TypeScript ESM library for injected request transport, typed Sha
 - Tests use injected transports; no network
 - Build clears `dist` before compile
 - PnPjs, local storage, UI, and server dependencies forbidden
-- Binary payloads → `Uint8Array`; large/resumable upload ⊥ planned
+- Binary payloads → `Uint8Array`; Graph simple upload ≤1_500_000; large/resumable upload ⊥ planned
 
 §I
 - Package root: `spfx-data-kit`
@@ -21,7 +21,7 @@ Dependency-free TypeScript ESM library for injected request transport, typed Sha
 - Client: `DataClient`, `requestCacheKey`, cache/retry/diagnostic option types
 - SharePoint: `SharePointRestAdapter`, URL helpers, CRUD/query/ETag/batch types
 - SharePoint files: `SharePointFilesAdapter`, file/folder/attachment URL helpers, metadata, binary download, bounded upload types
-- Graph: `GraphAdapter`, request/page/delta/batch option/result types
+- Graph: `GraphAdapter`, `GraphDriveAdapter`, request/page/delta/batch/drive/file option/result types
 - Manifest: `capabilityManifest`, `CAPABILITY_MANIFEST`
 
 §V
@@ -43,6 +43,9 @@ V15: SharePoint file/folder paths → encoded OData literals ∈ configured site
 V16: File/folder/attachment metadata ! required name & server-relative URL; upload content >1_500_000 bytes → reject before transport.
 V17: File/folder/attachment req → forward `AbortSignal`/`timeoutMs`; metadata → preserve ETags; meaningful writes → `IF-MATCH`.
 V18: Folder children → one expanded GET; upload/download ⊥ automatic follow-up reads.
+V19: Graph drive/file URL helpers → relative Graph paths; drive/item ids & upload path segments validated before transport.
+V20: Graph drive/root/item reads, children pages, upload, update, delete → preserve baseUrl, response ETags, `AbortSignal`, and `timeoutMs`; upload/download → `Uint8Array`; simple upload >1_500_000 → reject before transport.
+V21: Graph drive children iteration → reuse bounded page/iteration limits; no request after `maxPages`, `maxItems`, repeated link, or final page.
 
 §T
 id|status|task|cites
@@ -54,6 +57,7 @@ T5|x|restore concise docs and remove stale PnPjs/local package artifacts|V10
 T6|x|add PnP capability matrix and Graph page/delta iteration|V9,V13
 T7|x|forward cancellation/deadline options and retain structured HTTP error details|V11,V12
 T8|x|add binary transport, typed SharePoint files/folders/attachments, bounded uploads|V14-V18
+T9|x|add typed Graph drive/file metadata, bounded children paging, binary transfer, ETag writes, and explicit planned boundaries|V1,V11,V13,V14,V19-V21,I.api
 
 §B
 id|date|cause|fix

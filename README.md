@@ -5,7 +5,7 @@
 Authentication, authorization, URL discovery, and network access remain with the host through `RequestTransport`.
 
 ```ts
-import { DataClient, GraphAdapter } from "spfx-data-kit";
+import { DataClient, GraphAdapter, GraphDriveAdapter } from "spfx-data-kit";
 
 const client = new DataClient(transport, {
   retry: { maxRetries: 2 },
@@ -14,6 +14,8 @@ const client = new DataClient(transport, {
 
 const graph = new GraphAdapter(client);
 const result = await graph.request<{ id: string }>("/me");
+const drive = new GraphDriveAdapter(client);
+const bytes = await drive.downloadFile("drive-id", "item-id");
 ```
 
 The root export includes:
@@ -25,6 +27,7 @@ The root export includes:
 - `SharePointRestAdapter` for list paging, query construction, ETags, CRUD, and GET-only batch result parsing;
 - `SharePointFilesAdapter` for site-scoped file/folder metadata, one-request folder children, binary downloads, bounded small uploads (≤1,500,000 bytes), and list-item attachment metadata/download/upload/delete;
 - `GraphAdapter` for Graph requests with cached/deduplicated GETs, response-header ETags, page/delta parsing, bounded async iteration, and JSON batch result parsing;
+- `GraphDriveAdapter` for typed drive/root/item metadata, bounded children paging, binary file download, ETag-aware item update/delete, and bounded simple `Uint8Array` uploads (≤1,500,000 bytes);
 - transport `AbortSignal`/host-enforced timeout forwarding and structured service error details without changing `DataError.kind`;
 - `capabilityManifest` and `CAPABILITY_MANIFEST`.
 
@@ -41,4 +44,4 @@ npm run pack
 
 The package does not provide authentication, authorization, tenant discovery, persistent storage, offline storage, UI components, or network access.
 
-Large/resumable SharePoint uploads, drives, provisioning, pages, navigation, profiles, search, taxonomy, and other PnP wrapper families remain planned or excluded; see [docs/pnp-parity.md](docs/pnp-parity.md).
+Graph resumable uploads, thumbnails, previews, permissions, broader Graph service families, large/resumable SharePoint uploads, provisioning, pages, navigation, profiles, search, taxonomy, and other PnP wrapper families remain planned or excluded; see [docs/pnp-parity.md](docs/pnp-parity.md).

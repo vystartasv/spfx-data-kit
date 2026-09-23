@@ -10,13 +10,18 @@ export interface GraphPage<T> { readonly value: readonly T[]; readonly nextLink?
 export interface GraphDelta<T> { readonly value: readonly T[]; readonly deltaLink?: string; }
 export interface GraphIterationOptions { readonly maxPages?: number; readonly maxItems?: number; }
 export interface GraphAdapterOptions { readonly baseUrl?: string; }
+export interface GraphDriveMetadata { readonly id: string; readonly driveType?: string; readonly name?: string; readonly webUrl?: string; readonly createdDateTime?: string; readonly lastModifiedDateTime?: string; readonly owner?: unknown; readonly quota?: unknown; readonly [key: string]: unknown; }
+export interface GraphDriveItemMetadata { readonly id: string; readonly name?: string; readonly size?: number; readonly eTag?: string; readonly cTag?: string; readonly webUrl?: string; readonly createdDateTime?: string; readonly lastModifiedDateTime?: string; readonly file?: unknown; readonly folder?: unknown; readonly parentReference?: unknown; readonly [key: string]: unknown; }
+export interface GraphDriveItemUpdate { readonly name?: string; readonly description?: string; readonly fileSystemInfo?: { readonly createdDateTime?: string; readonly lastModifiedDateTime?: string }; readonly [key: string]: unknown; }
+export type GraphDriveRequestOptions = GraphRequestOptions;
+export interface GraphDriveWriteOptions extends GraphRequestOptions { readonly etag?: string; }
 
 const jsonHeaders = { Accept: "application/json", "Content-Type": "application/json" };
 const batchMethods = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
 const asRecord = (value: unknown): Record<string, unknown> => typeof value === "object" && value !== null ? value as Record<string, unknown> : {};
 const etagOf = (value: unknown): string | undefined => {
   const row = asRecord(value);
-  const etag = row["@odata.etag"] ?? row["odata.etag"];
+  const etag = row["@odata.etag"] ?? row["odata.etag"] ?? row.eTag ?? row.etag;
   return typeof etag === "string" ? etag : undefined;
 };
 const absolute = (base: string, path: string): string => /^[a-z][a-z\d+.-]*:/i.test(path) ? path : `${base.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
@@ -32,6 +37,26 @@ const validateIteration = (options: GraphIterationOptions): void => {
     if (value !== undefined && (!Number.isInteger(value) || value < 0)) throw new DataError("validation", `${name} must be a non-negative integer`);
   }
 };
+const graphSegment = (value: string, label: string): string => {
+  if (typeof value !== "string" || value.length === 0) throw new DataError("validation", `${label} must be a non-empty path segment`);
+  let decoded: string;
+  try { decoded = decodeURIComponent(value); } catch (cause) { throw new DataError("validation", `${label} encoding is invalid`, cause); }
+  if (decoded === "." || decoded === ".." || /[\\/?#]/.test(decoded)) throw new DataError("validation", `${label} must be a single path segment`);
+  return encodeURIComponent(decoded);
+};
+const graphPath = (value: string): string[] => {
+  if (typeof value !== "string" || value.length === 0 || value.startsWith("/") || value.endsWith("/")) throw new DataError("validation", "Graph drive file path must be relative and non-empty");
+  const segments = value.split("/");
+  return segments.map((segment) => graphSegment(segment, "Graph drive file path segment"));
+};
+const graphOptions = (options: GraphRequestOptions, accept = "application/json"): GraphRequestOptions => ({ ...options, headers: { Accept: accept, ...options.headers } });
+
+export function graphDriveUrl(driveId: string): string { return `/drives/${graphSegment(driveId, "Graph drive id")}`; }
+export function graphDriveRootUrl(driveId: string): string { return `${graphDriveUrl(driveId)}/root`; }
+export function graphDriveItemUrl(driveId: string, itemId: string): string { return `${graphDriveUrl(driveId)}/items/${graphSegment(itemId, "Graph drive item id")}`; }
+export function graphDriveChildrenUrl(driveId: string, itemId?: string): string { return `${itemId === undefined ? graphDriveRootUrl(driveId) : graphDriveItemUrl(driveId, itemId)}/children`; }
+export function graphDriveContentUrl(driveId: string, itemId: string): string { return `${graphDriveItemUrl(driveId, itemId)}/content`; }
+export function graphDriveUploadUrl(driveId: string, filePath: string): string { return `${graphDriveUrl(driveId)}/root:/${graphPath(filePath).join("/")}:/content`; }
 
 export class GraphAdapter {
   private readonly baseUrl: string;
@@ -119,5 +144,61 @@ export class GraphAdapter {
     });
     if (responseIds.size !== ids.size) throw new DataError("unknown", "Graph batch response did not contain every child response", payload, response.status);
     return { responses, failures: responses.filter((item) => !item.ok) };
+  }
+}
+
+export const graphSmallUploadMaxBytes = 1_500_000;
+
+export class GraphDriveAdapter {
+  private readonly baseUrl: string;
+  private readonly graph: GraphAdapter;
+  constructor(private readonly client: DataClient, options: GraphAdapterOptions = {}) {
+    this.baseUrl = options.baseUrl ?? "https://graph.microsoft.com/v1.0";
+    this.graph = new GraphAdapter(client, options);
+  }
+
+  getDrive(driveId: string, options: GraphDriveRequestOptions = {}): Promise<DataResult<GraphDriveMetadata>> {
+    return this.graph.request<GraphDriveMetadata>(graphDriveUrl(driveId), graphOptions(options));
+  }
+  getRoot(driveId: string, options: GraphDriveRequestOptions = {}): Promise<DataResult<GraphDriveItemMetadata>> {
+    return this.graph.request<GraphDriveItemMetadata>(graphDriveRootUrl(driveId), graphOptions(options));
+  }
+  getItem(driveId: string, itemId: string, options: GraphDriveRequestOptions = {}): Promise<DataResult<GraphDriveItemMetadata>> {
+    return this.graph.request<GraphDriveItemMetadata>(graphDriveItemUrl(driveId, itemId), graphOptions(options));
+  }
+  listChildren<T extends GraphDriveItemMetadata = GraphDriveItemMetadata>(driveId: string, itemIdOrOptions?: string | (GraphIterationOptions & GraphDriveRequestOptions), options: GraphIterationOptions & GraphDriveRequestOptions = {}): Promise<GraphPage<T>> {
+    const itemId = typeof itemIdOrOptions === "string" ? itemIdOrOptions : undefined;
+    const requestOptions = typeof itemIdOrOptions === "string" ? options : itemIdOrOptions ?? {};
+    return this.graph.page<T>(graphDriveChildrenUrl(driveId, itemId), graphOptions(requestOptions));
+  }
+  children<T extends GraphDriveItemMetadata = GraphDriveItemMetadata>(driveId: string, itemIdOrOptions?: string | (GraphIterationOptions & GraphDriveRequestOptions), options: GraphIterationOptions & GraphDriveRequestOptions = {}): Promise<GraphPage<T>> {
+    return this.listChildren<T>(driveId, itemIdOrOptions, options);
+  }
+  childrenPages<T extends GraphDriveItemMetadata = GraphDriveItemMetadata>(driveId: string, itemIdOrOptions?: string | (GraphIterationOptions & GraphDriveRequestOptions), options: GraphIterationOptions & GraphDriveRequestOptions = {}): AsyncIterable<GraphPage<T>> {
+    const itemId = typeof itemIdOrOptions === "string" ? itemIdOrOptions : undefined;
+    const requestOptions = typeof itemIdOrOptions === "string" ? options : itemIdOrOptions ?? {};
+    return this.graph.pages<T>(graphDriveChildrenUrl(driveId, itemId), graphOptions(requestOptions));
+  }
+  iterateChildren<T extends GraphDriveItemMetadata = GraphDriveItemMetadata>(driveId: string, itemIdOrOptions?: string | (GraphIterationOptions & GraphDriveRequestOptions), options: GraphIterationOptions & GraphDriveRequestOptions = {}): AsyncIterable<T> {
+    const itemId = typeof itemIdOrOptions === "string" ? itemIdOrOptions : undefined;
+    const requestOptions = typeof itemIdOrOptions === "string" ? options : itemIdOrOptions ?? {};
+    return this.graph.iterate<T>(graphDriveChildrenUrl(driveId, itemId), graphOptions(requestOptions));
+  }
+  downloadFile(driveId: string, itemId: string, options: GraphDriveRequestOptions = {}): Promise<Uint8Array> {
+    const headers: RequestHeaders = { Accept: "*/*", ...options.headers, ...(options.etag === undefined ? {} : { "If-Match": options.etag }) };
+    return this.client.requestBytes(absolute(this.baseUrl, graphDriveContentUrl(driveId, itemId)), { headers, signal: options.signal, timeoutMs: options.timeoutMs });
+  }
+  async uploadFile(driveId: string, filePath: string, content: Uint8Array, options: GraphDriveWriteOptions = {}): Promise<DataResult<GraphDriveItemMetadata>> {
+    if (!(content instanceof Uint8Array)) throw new DataError("validation", "Graph drive file content must be a Uint8Array");
+    if (content.byteLength > graphSmallUploadMaxBytes) throw new DataError("validation", `Graph simple uploads are limited to ${graphSmallUploadMaxBytes} bytes`);
+    const response = await this.client.requestRaw({ url: absolute(this.baseUrl, graphDriveUploadUrl(driveId, filePath)), method: "PUT", headers: { Accept: "application/json", "Content-Type": "application/octet-stream", ...options.headers, ...(options.etag === undefined ? {} : { "If-Match": options.etag }) }, body: content, signal: options.signal, timeoutMs: options.timeoutMs });
+    const value = parseJson<GraphDriveItemMetadata>(response.text, response.status);
+    return { data: value, ...(etagOf(value) === undefined && headerValue(response.headers, "etag") === undefined ? {} : { etag: etagOf(value) ?? headerValue(response.headers, "etag") }) };
+  }
+  updateItem(driveId: string, itemId: string, input: GraphDriveItemUpdate, options: GraphDriveWriteOptions = {}): Promise<DataResult<GraphDriveItemMetadata>> {
+    return this.graph.request<GraphDriveItemMetadata>(graphDriveItemUrl(driveId, itemId), { ...graphOptions(options), method: "PATCH", body: input });
+  }
+  deleteItem(driveId: string, itemId: string, options: GraphDriveWriteOptions = {}): Promise<DataResult<void>> {
+    return this.graph.request<void>(graphDriveItemUrl(driveId, itemId), { ...graphOptions(options), method: "DELETE" });
   }
 }

@@ -14,6 +14,8 @@ This is a capability-family comparison, not a claim of full parity.
 | SharePoint large/resumable uploads | large-file APIs | — | planned | Not implemented or claimed in this track. |
 | Graph requests | — | broad fluent surface | present | Generic Graph JSON requests, ETags, page/delta parsing, and bounded async iteration. |
 | Graph JSON batch | — | batch support | partial | JSON batch result parsing with the service limit of 20 children. |
-| Drives, sites, groups, admin, provisioning, pages, navigation, profiles, search, taxonomy, and other service families | present across selected modules | present across selected modules | planned | Add only as independently specified typed REST surfaces. |
+| Graph drives and file helpers | drives/files/folders | drives/files/folders | partial | Typed drive/root/item metadata, bounded children paging, binary download, ETag-aware item update/delete, and simple `Uint8Array` uploads ≤1,500,000 bytes. |
+| Graph resumable uploads, thumbnails, previews, and permissions | selected APIs | selected APIs | planned | Not implemented or claimed; simple upload ceiling is explicit. |
+| Graph sites, groups, admin, provisioning, pages, navigation, profiles, search, taxonomy, and other service families | present across selected modules | present across selected modules | planned | Add only as independently specified typed REST surfaces. |
 | Fluent wrappers and PnPjs behaviors | present | present | excluded | No PnPjs dependency or fluent compatibility layer. |
 | Authentication, permissions, and tenant URL discovery | host/configuration dependent | host/configuration dependent | host-owned | The host supplies authenticated URLs and transport behavior. |

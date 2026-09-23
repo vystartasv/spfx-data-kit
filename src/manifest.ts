@@ -12,6 +12,7 @@ export const capabilityManifest = {
     "sharepoint-rest-batch-results",
     "graph-json-batch-results",
     "graph-page-delta-iteration",
+    "graph-drive-file-helpers",
     "abort-signal-timeout-forwarding",
     "structured-error-details",
     "etag-if-match",
@@ -22,10 +23,13 @@ export const capabilityManifest = {
     sharepointFilesFoldersAttachments: "partial",
     sharepointSmallUpload: "present",
     sharepointLargeResumableUpload: "planned",
-    sharepointDrivesProvisioningPagesNavigationProfilesSearchTaxonomy: "planned",
+    graphDriveFileHelpers: "partial",
+    graphSimpleUpload: "present",
+    graphResumableUploadsThumbnailsPreviewsPermissions: "planned",
+    graphSitesGroupsAdminProvisioningPagesNavigationProfilesSearchTaxonomy: "planned",
     fluentPnPCompatibility: "excluded",
   },
-  limits: { graphJsonBatchMaxRequests: 20, sharepointSmallUploadMaxBytes: 1_500_000, cacheRequiresExplicitBounds: true },
+  limits: { graphJsonBatchMaxRequests: 20, graphSmallUploadMaxBytes: 1_500_000, sharepointSmallUploadMaxBytes: 1_500_000, cacheRequiresExplicitBounds: true },
   boundaries: ["authentication", "authorization", "tenant-discovery", "offline-storage", "persistent-storage", "performance-benchmarks"],
 } as const;
 
