@@ -1,0 +1,166 @@
+import { DataError, headerValue, parseJson } from "./errors.js";
+import { DataClient } from "./client.js";
+import type { CrudResource, DataResult, ListQuery, ListResult, RemoveOptions, RequestHeaders, UpdateOptions } from "./contracts.js";
+
+type Row = Record<string, unknown>;
+export type SharePointFieldMap<TEntity> = Partial<Record<keyof TEntity, string>>;
+export interface SharePointRestOptions<TEntity, TCreate, TUpdate> {
+  readonly siteUrl: string;
+  readonly listTitle: string;
+  readonly map?: SharePointFieldMap<TEntity>;
+  readonly createMap?: (input: TCreate) => Row;
+  readonly updateMap?: (input: TUpdate) => Row;
+}
+export interface SharePointBatchRequest { readonly id?: string; readonly method: "GET"; readonly url: string; readonly headers?: RequestHeaders; }
+export interface SharePointBatchResponse { readonly id?: string; readonly status: number; readonly headers: RequestHeaders; readonly body?: unknown; readonly ok: boolean; }
+export interface SharePointBatchResult { readonly responses: readonly SharePointBatchResponse[]; readonly failures: readonly SharePointBatchResponse[]; }
+
+const jsonAccept = "application/json;odata=nometadata";
+const asRow = (value: unknown): Row => typeof value === "object" && value !== null ? value as Row : {};
+const asText = (value: unknown): string | undefined => typeof value === "string" ? value : undefined;
+
+export function sharePointListItemsUrl(siteUrl: string, listTitle: string): string {
+  const base = siteUrl.replace(/\/+$/, "");
+  const escaped = encodeURIComponent(listTitle.replaceAll("'", "''"));
+  return `${base}/_api/web/lists/getbytitle('${escaped}')/items`;
+}
+export function sharePointItemUrl(siteUrl: string, listTitle: string, id: number): string {
+  if (!Number.isInteger(id) || id < 1) throw new DataError("validation", "SharePoint item id must be a positive integer");
+  return `${sharePointListItemsUrl(siteUrl, listTitle)}(${id})`;
+}
+
+function validateBounds(query: ListQuery | undefined): void {
+  for (const [name, value] of [["pageSize", query?.pageSize], ["maxPages", query?.maxPages]] as const) {
+    if (value !== undefined && (!Number.isInteger(value) || value < 0 || (name === "pageSize" && value < 1))) throw new DataError("validation", `${name} must be a positive integer`);
+  }
+  if (query?.top !== undefined && (!Number.isInteger(query.top) || query.top < 0)) throw new DataError("validation", "top must be a non-negative integer");
+}
+function queryUrl(base: string, query: ListQuery): string {
+  const values: string[] = [];
+  const add = (name: string, value: string | number) => values.push(`${name}=${encodeURIComponent(String(value))}`);
+  if (query.select?.length) add("$select", query.select.join(","));
+  if (query.expand?.length) add("$expand", query.expand.join(","));
+  if (query.filter) add("$filter", query.filter);
+  if (query.orderBy) {
+    const orders = typeof query.orderBy === "string" ? [[query.orderBy, true] as [string, boolean]] : query.orderBy;
+    add("$orderby", orders.map(([field, ascending]) => `${field} ${ascending ? "asc" : "desc"}`).join(","));
+  }
+  const pageSize = query.pageSize ?? 100;
+  add("$top", query.top === undefined ? pageSize : Math.min(query.top, pageSize));
+  return `${base}?${values.join("&")}`;
+}
+function pageRows(value: unknown): Row[] {
+  const root = asRow(value);
+  const d = asRow(root.d);
+  const rows = root.value ?? d.results;
+  return Array.isArray(rows) ? rows.map(asRow) : [];
+}
+function nextLink(value: unknown): string | undefined {
+  const root = asRow(value);
+  return asText(root["@odata.nextLink"]) ?? asText(root["odata.nextLink"]) ?? asText(asRow(root.d).__next);
+}
+function rowId(row: Row): number | undefined {
+  const id = row.Id ?? row.ID;
+  return typeof id === "number" && Number.isInteger(id) ? id : undefined;
+}
+function rowEtag(row: Row): string | undefined { return asText(row["@odata.etag"]) ?? asText(row["odata.etag"]) ?? asText(row.ETag); }
+function itemRow(value: unknown): Row { const row = asRow(value); return asRow(row.d ?? row); }
+
+function parseBatchHeaders(value: string): RequestHeaders {
+  const headers: Record<string, string> = {};
+  for (const line of value.split(/\r?\n/)) { const index = line.indexOf(":"); if (index > 0) headers[line.slice(0, index).trim()] = line.slice(index + 1).trim(); }
+  return headers;
+}
+function parseBatchResponse(text: string, contentType: string | undefined, requests: readonly SharePointBatchRequest[]): SharePointBatchResult {
+  const match = contentType?.match(/boundary\s*=\s*(?:"([^"]+)"|([^;\s]+))/i);
+  if (!match) throw new DataError("unknown", "SharePoint batch response did not include a boundary");
+  const boundary = match[1] ?? match[2];
+  const responses: SharePointBatchResponse[] = [];
+  for (const part of text.split(`--${boundary}`).slice(1)) {
+    if (part.trim() === "" || part.trim() === "--") continue;
+    const http = part.match(/HTTP\/\d(?:\.\d)?\s+(\d{3})[^\r\n]*\r?\n([\s\S]*?)(?:\r?\n\r?\n)([\s\S]*)/i);
+    if (!http) continue;
+    const status = Number(http[1]);
+    const headers = parseBatchHeaders(http[2]);
+    const rawBody = http[3].replace(/\r?\n--?\s*$/, "").trim();
+    let body: unknown = rawBody;
+    if (rawBody) { try { body = JSON.parse(rawBody); } catch { /* non-JSON child response */ } }
+    const index = responses.length;
+    responses.push({ id: requests[index]?.id, status, headers, body, ok: status >= 200 && status < 300 });
+  }
+  return { responses, failures: responses.filter((response) => !response.ok) };
+}
+
+export class SharePointRestAdapter<TEntity = Row, TCreate = Partial<TEntity>, TUpdate = Partial<TEntity>> implements CrudResource<TEntity, TCreate, TUpdate> {
+  private readonly base: string;
+  constructor(private readonly client: DataClient, private readonly options: SharePointRestOptions<TEntity, TCreate, TUpdate>) {
+    this.base = sharePointListItemsUrl(options.siteUrl, options.listTitle);
+  }
+  private map(raw: Row): TEntity {
+    if (!this.options.map) return raw as TEntity;
+    const output = {} as Row;
+    for (const key of Object.keys(this.options.map) as (keyof TEntity)[]) { const field = this.options.map[key]; if (field) output[String(key)] = raw[field]; }
+    return output as TEntity;
+  }
+  private result(raw: Row): DataResult<TEntity> { const etag = rowEtag(raw); return etag === undefined ? { data: this.map(raw) } : { data: this.map(raw), etag }; }
+  private async read(url: string): Promise<DataResult<TEntity>> {
+    const response = await this.client.requestRaw({ url, method: "GET", headers: { Accept: jsonAccept } });
+    return this.result(itemRow(parseJson<unknown>(response.text, response.status)));
+  }
+  async list(query: ListQuery = {}): Promise<ListResult<TEntity>> {
+    validateBounds(query);
+    if (query.top === 0 || query.maxPages === 0) return { data: [], etags: {} };
+    const data: TEntity[] = [];
+    const etags: Record<string, string> = {};
+    let url = queryUrl(this.base, query);
+    let pages = 0;
+    while (url) {
+      const response = await this.client.requestRaw({ url, method: "GET", headers: { Accept: jsonAccept } });
+      const payload = parseJson<unknown>(response.text, response.status);
+      for (const raw of pageRows(payload)) {
+        if (query.top !== undefined && data.length >= query.top) break;
+        data.push(this.map(raw));
+        const id = rowId(raw); const etag = rowEtag(raw); if (id !== undefined && etag !== undefined) etags[String(id)] = etag;
+      }
+      pages++;
+      if ((query.maxPages !== undefined && pages >= query.maxPages) || (query.top !== undefined && data.length >= query.top)) break;
+      const link = nextLink(payload); if (!link) break;
+      url = /^[a-z][a-z\d+.-]*:/i.test(link) ? link : new URL(link, url).toString();
+    }
+    return { data, etags };
+  }
+  get(id: number): Promise<DataResult<TEntity>> { return this.read(sharePointItemUrl(this.options.siteUrl, this.options.listTitle, id)); }
+  async create(input: TCreate): Promise<DataResult<TEntity>> {
+    const response = await this.client.requestRaw({ url: this.base, method: "POST", headers: { Accept: jsonAccept, "Content-Type": "application/json;odata=nometadata" }, body: JSON.stringify(this.options.createMap?.(input) ?? input) });
+    const raw = response.text.trim() ? asRow(parseJson<unknown>(response.text, response.status)) : {};
+    const payload = asRow(raw.d ?? raw);
+    const location = headerValue(response.headers, "location");
+    const id = rowId(payload) ?? Number(location?.match(/(?:items\(|\/)(\d+)\)?(?:$|\?)/i)?.[1]);
+    if (!Number.isInteger(id) || id < 1) throw new DataError("unknown", "SharePoint did not return the new item id", undefined, response.status);
+    this.client.invalidateUrlPrefix(this.base);
+    return this.get(id);
+  }
+  async update(id: number, input: TUpdate, options?: UpdateOptions): Promise<DataResult<TEntity>> {
+    const url = sharePointItemUrl(this.options.siteUrl, this.options.listTitle, id);
+    await this.client.requestRaw({ url, method: "POST", headers: { Accept: jsonAccept, "Content-Type": "application/json;odata=nometadata", "X-HTTP-Method": "MERGE", "IF-MATCH": options?.etag ?? "*" }, body: JSON.stringify(this.options.updateMap?.(input) ?? input) });
+    this.client.invalidateUrlPrefix(this.base);
+    return this.get(id);
+  }
+  async remove(id: number, options?: RemoveOptions): Promise<DataResult<void>> {
+    const url = sharePointItemUrl(this.options.siteUrl, this.options.listTitle, id);
+    await this.client.requestRaw({ url, method: "DELETE", headers: { Accept: jsonAccept, "IF-MATCH": options?.etag ?? "*" } });
+    this.client.invalidateUrlPrefix(this.base);
+    return { data: undefined };
+  }
+  async batch(requests: readonly SharePointBatchRequest[], boundary = "spfx-data-kit-batch"): Promise<SharePointBatchResult> {
+    if (requests.some((request) => request.method !== "GET")) throw new DataError("validation", "SharePoint REST batches support GET children only");
+    const lines: string[] = [];
+    for (const request of requests) {
+      const url = /^[a-z][a-z\d+.-]*:/i.test(request.url) ? request.url : new URL(request.url, this.options.siteUrl).toString();
+      lines.push(`--${boundary}`, "Content-Type: application/http", "Content-Transfer-Encoding: binary", "", `GET ${url} HTTP/1.1`, `Accept: ${request.headers?.Accept ?? jsonAccept}`, "", "");
+    }
+    lines.push(`--${boundary}--`, "");
+    const response = await this.client.requestRaw({ url: `${this.options.siteUrl.replace(/\/+$/, "")}/_api/$batch`, method: "POST", headers: { Accept: jsonAccept, "Content-Type": `multipart/mixed; boundary=${boundary}` }, body: lines.join("\r\n") });
+    return parseBatchResponse(response.text, headerValue(response.headers, "content-type"), requests);
+  }
+}

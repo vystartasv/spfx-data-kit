@@ -1,43 +1,46 @@
 # spfx-data-kit
 
 §G
-Small typed SPFx SharePoint CRUD library; hide repetitive PnPjs calls without becoming HTTP/framework layer.
+Dependency-free TypeScript ESM library for injected request transport, typed SharePoint REST list CRUD, and Microsoft Graph JSON batch results.
 
 §C
 - TypeScript; Node 22; ESM
-- @pnp/sp v4 peer/dev dependency
-- bounded async paging; no getPaged
-- typed errors; preserve safe original cause
-- no auth, permissions, Graph, retries, batching, telemetry, UI
+- Runtime dependencies: none
+- Host owns authentication, authorization, URL discovery, network access
+- Public `DataError.kind` values stable
+- Tests use injected transports; no network
+- Build clears `dist` before compile
+- PnPjs, local storage, UI, and server dependencies forbidden
 
 §I
-- CrudResource<TEntity,TCreate,TUpdate>
-- ListQuery
-- DataResult/ListResult/DataError
-- LocalCrudResource
-- PnPjsListResource
-- createSpfi(context)
-- package exports: dist/index.js and dist/index.d.ts
+- Package root: `spfx-data-kit`
+- Capabilities: `spfx-data-kit/capabilities`
+- Contracts: `RequestTransport`, `DataRequest`, `DataResult`, `ListResult`, `ListQuery`, `CrudResource`
+- Errors: `DataError`, `headerValue`, `retryAfterMilliseconds`, `mapHttpError`, `mapSharePointError`, `parseJson`
+- Client: `DataClient`, `requestCacheKey`, cache/retry/diagnostic option types
+- SharePoint: `SharePointRestAdapter`, URL helpers, CRUD/query/ETag/batch types
+- Graph: `GraphAdapter`, request/batch option/result types
+- Manifest: `capabilityManifest`, `CAPABILITY_MANIFEST`
 
 §V
-V1. Public CRUD methods preserve entity/create/update types.
-V2. `pageSize` is items per server iterator page; `maxPages` bounds iterator pages; `top` bounds total items; no page is requested after either bound.
-V3. Local writes reject stale etags and invalid/duplicate input with typed errors.
-V4. PnPjs v4 mapping exposes only configured fields; update passes optional ETag and re-reads after possible 204/no content; delete passes optional ETag.
-V5. SharePoint failures map to stable error kinds and retain original cause.
-V6. SPFI helper is used after SPFx super.onInit lifecycle.
-V7. Local initial/create ETag is `"1"`; successful update increments it; values are cloned at every boundary.
-V8. With `top=N`, first server page size is `min(N,pageSize)` and result has at most N items; omitted limits are unbounded without Infinity arithmetic.
-V9. `DataResult<T>` is `{data:T;etag?:string}` for single-item results; `ListResult<T>` is `{data:T[];etags:Readonly<Record<string,string>>}`; list data is plain entities with separate per-id ETags; local values remain cloned.
-V10. PnPjs maps `@odata.etag`, `odata.etag`, or `ETag` when present; update re-read supplies the fresh ETag.
+V1: Root export includes contracts, errors, client, SharePoint, Graph, and manifest APIs.
+V2: `RequestTransport` remains sole host boundary for request execution.
+V3: GET requests support in-flight deduplication; configured cache enforces positive `maxEntries` and `ttlMs`; cache invalidation removes matching entries.
+V4: Only GET requests retry; retry count is bounded; non-GET requests never retry automatically.
+V5: HTTP statuses map to stable `DataError.kind` values; `cause`, `status`, and retry delay remain available where supplied.
+V6: SharePoint list reads support select, expand, filter, orderBy, top, pageSize, maxPages, next links, mapped entities, and per-item ETags.
+V7: SharePoint writes use POST/DELETE, optional `IF-MATCH`, invalidate list URL cache entries, and re-read created/updated items.
+V8: SharePoint batch children accept GET only; results preserve child status, headers, body, id, and `ok`.
+V9: Graph batch child URLs are relative, ids are unique and non-empty, and request count ≤ 20; results preserve child failures.
+V10: Build output contains only current `src/**/*.ts` compilation; package exports and files contain no PnPjs/local artifacts.
 
 §T
 id|status|task|cites
-T1|.|package TypeScript ESM library|V1,I.api
-T2|.|implement local CRUD and errors|V1,V3
-T3|.|implement PnPjs v4 adapter and paging|V2,V4,V5
-T4|.|tests for local, adapter, paging, errors, ETags|V1-V5,V9-V10
-T5|.|README, license, lifecycle docs|V6,I.api
+T1|x|publish dependency-free ESM package and capability subpath|V1,V10,I.api
+T2|x|implement injected transport client, cache, invalidation, diagnostics, retries, and errors|V2-V5
+T3|x|implement SharePoint REST CRUD, paging, queries, ETags, and GET batches|V6-V8
+T4|x|implement Graph requests, JSON batches, and capability manifest|V1,V9,I.api
+T5|x|restore concise docs and remove stale PnPjs/local package artifacts|V10
 
 §B
 id|date|cause|fix
