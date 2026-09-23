@@ -27,6 +27,17 @@ export interface GraphListQuery extends GraphIterationOptions, GraphRequestOptio
   readonly orderBy?: string | readonly [string, boolean][];
   readonly top?: number;
 }
+export interface GraphDirectoryObject { readonly id: string; readonly [key: string]: unknown; }
+export interface GraphUser extends GraphDirectoryObject { readonly displayName?: string; readonly userPrincipalName?: string; readonly mail?: string; }
+export interface GraphGroup extends GraphDirectoryObject { readonly displayName?: string; readonly description?: string; readonly mail?: string; readonly mailEnabled?: boolean; readonly securityEnabled?: boolean; }
+export interface GraphDirectoryQuery extends GraphIterationOptions, GraphRequestOptions {
+  readonly select?: readonly string[];
+  readonly filter?: string;
+  readonly orderBy?: string | readonly [string, boolean][];
+  readonly top?: number;
+}
+export type GraphDirectoryRequestOptions = GraphDirectoryQuery;
+export type GraphDirectoryWriteOptions = GraphRequestOptions;
 export type GraphSiteRequestOptions = GraphRequestOptions;
 export type GraphListWriteOptions = GraphRequestOptions;
 
@@ -64,13 +75,13 @@ const graphPath = (value: string): string[] => {
   return segments.map((segment) => graphSegment(segment, "Graph drive file path segment"));
 };
 const graphOptions = (options: GraphRequestOptions, accept = "application/json"): GraphRequestOptions => ({ ...options, headers: { Accept: accept, ...options.headers } });
-const graphQuery = (path: string, options: GraphListQuery): string => {
+const graphQuery = (path: string, options: GraphListQuery | GraphDirectoryQuery): string => {
   validateIteration(options);
   if (options.top !== undefined && (!Number.isInteger(options.top) || options.top < 0)) throw new DataError("validation", "top must be a non-negative integer");
   const values: string[] = [];
   const add = (name: string, value: string | number): void => { values.push(`${name}=${encodeURIComponent(String(value)).replaceAll("'", "%27")}`); };
   if (options.select?.length) add("$select", options.select.join(","));
-  if (options.expand?.length) add("$expand", options.expand.join(","));
+  if ("expand" in options && options.expand?.length) add("$expand", options.expand.join(","));
   if (options.filter) add("$filter", options.filter);
   if (options.orderBy) {
     const orders = typeof options.orderBy === "string" ? [[options.orderBy, true] as [string, boolean]] : options.orderBy;
@@ -103,6 +114,14 @@ export function graphListUrl(siteId: string, listId: string): string { return `$
 export function graphListItemsUrl(siteId: string, listId: string): string { return `${graphListUrl(siteId, listId)}/items`; }
 export function graphListItemUrl(siteId: string, listId: string, itemId: string): string { return `${graphListItemsUrl(siteId, listId)}/${graphSegment(itemId, "Graph list item id")}`; }
 export function graphListItemFieldsUrl(siteId: string, listId: string, itemId: string): string { return `${graphListItemUrl(siteId, listId, itemId)}/fields`; }
+export function graphCurrentUserUrl(): string { return "/me"; }
+export function graphUsersUrl(): string { return "/users"; }
+export function graphUserUrl(userId: string): string { return `${graphUsersUrl()}/${graphSegment(userId, "Graph user id")}`; }
+export function graphGroupsUrl(): string { return "/groups"; }
+export function graphGroupUrl(groupId: string): string { return `${graphGroupsUrl()}/${graphSegment(groupId, "Graph group id")}`; }
+export function graphGroupMembersUrl(groupId: string): string { return `${graphGroupUrl(groupId)}/members`; }
+export function graphGroupMembersRefUrl(groupId: string, memberId: string): string { return `${graphGroupMembersUrl(groupId)}/${graphSegment(memberId, "Graph group member id")}/$ref`; }
+export function graphDirectoryObjectUrl(objectId: string): string { return `/directoryObjects/${graphSegment(objectId, "Graph directory object id")}`; }
 
 export class GraphAdapter {
   private readonly baseUrl: string;
@@ -293,5 +312,64 @@ export class GraphSitesAdapter {
   }
   deleteItem(siteId: string, listId: string, itemId: string, options: GraphListWriteOptions = {}): Promise<DataResult<void>> {
     return this.graph.request<void>(graphListItemUrl(siteId, listId, itemId), { ...graphOptions(options), method: "DELETE" });
+  }
+}
+
+export class GraphDirectoryAdapter {
+  private readonly baseUrl: string;
+  private readonly graph: GraphAdapter;
+  constructor(client: DataClient, options: GraphAdapterOptions = {}) {
+    this.baseUrl = options.baseUrl ?? "https://graph.microsoft.com/v1.0";
+    this.graph = new GraphAdapter(client, options);
+  }
+
+  getCurrentUser<T extends GraphUser = GraphUser>(options: GraphDirectoryRequestOptions = {}): Promise<DataResult<T>> {
+    return this.graph.request<T>(graphQuery(graphCurrentUserUrl(), options), graphOptions(options));
+  }
+  getUser<T extends GraphUser = GraphUser>(userId: string, options: GraphDirectoryRequestOptions = {}): Promise<DataResult<T>> {
+    return this.graph.request<T>(graphQuery(graphUserUrl(userId), options), graphOptions(options));
+  }
+  listUsers<T extends GraphUser = GraphUser>(options: GraphDirectoryQuery = {}): Promise<GraphPage<T>> {
+    const path = graphQuery(graphUsersUrl(), options);
+    return options.top === 0 || options.maxPages === 0 || options.maxItems === 0 ? Promise.resolve(emptyGraphPage<T>()) : this.graph.page<T>(path, graphOptions(options));
+  }
+  usersPages<T extends GraphUser = GraphUser>(options: GraphDirectoryQuery = {}): AsyncIterable<GraphPage<T>> {
+    return this.graph.pages<T>(graphQuery(graphUsersUrl(), options), graphOptions(options));
+  }
+  iterateUsers<T extends GraphUser = GraphUser>(options: GraphDirectoryQuery = {}): AsyncIterable<T> {
+    return this.graph.iterate<T>(graphQuery(graphUsersUrl(), options), graphOptions(options));
+  }
+  listGroups<T extends GraphGroup = GraphGroup>(options: GraphDirectoryQuery = {}): Promise<GraphPage<T>> {
+    const path = graphQuery(graphGroupsUrl(), options);
+    return options.top === 0 || options.maxPages === 0 || options.maxItems === 0 ? Promise.resolve(emptyGraphPage<T>()) : this.graph.page<T>(path, graphOptions(options));
+  }
+  groupsPages<T extends GraphGroup = GraphGroup>(options: GraphDirectoryQuery = {}): AsyncIterable<GraphPage<T>> {
+    return this.graph.pages<T>(graphQuery(graphGroupsUrl(), options), graphOptions(options));
+  }
+  iterateGroups<T extends GraphGroup = GraphGroup>(options: GraphDirectoryQuery = {}): AsyncIterable<T> {
+    return this.graph.iterate<T>(graphQuery(graphGroupsUrl(), options), graphOptions(options));
+  }
+  getGroup<T extends GraphGroup = GraphGroup>(groupId: string, options: GraphDirectoryRequestOptions = {}): Promise<DataResult<T>> {
+    return this.graph.request<T>(graphQuery(graphGroupUrl(groupId), options), graphOptions(options));
+  }
+  listMembers<T extends GraphDirectoryObject = GraphDirectoryObject>(groupId: string, options: GraphDirectoryQuery = {}): Promise<GraphPage<T>> {
+    const path = graphQuery(graphGroupMembersUrl(groupId), options);
+    return options.top === 0 || options.maxPages === 0 || options.maxItems === 0 ? Promise.resolve(emptyGraphPage<T>()) : this.graph.page<T>(path, graphOptions(options));
+  }
+  membersPages<T extends GraphDirectoryObject = GraphDirectoryObject>(groupId: string, options: GraphDirectoryQuery = {}): AsyncIterable<GraphPage<T>> {
+    return this.graph.pages<T>(graphQuery(graphGroupMembersUrl(groupId), options), graphOptions(options));
+  }
+  iterateMembers<T extends GraphDirectoryObject = GraphDirectoryObject>(groupId: string, options: GraphDirectoryQuery = {}): AsyncIterable<T> {
+    return this.graph.iterate<T>(graphQuery(graphGroupMembersUrl(groupId), options), graphOptions(options));
+  }
+  addMember(groupId: string, memberId: string, options: GraphDirectoryWriteOptions = {}): Promise<DataResult<void>> {
+    return this.graph.request<void>(graphGroupMembersUrl(groupId) + "/$ref", {
+      ...graphOptions(options),
+      method: "POST",
+      body: { "@odata.id": absolute(this.baseUrl, graphDirectoryObjectUrl(memberId)) },
+    });
+  }
+  removeMember(groupId: string, memberId: string, options: GraphDirectoryWriteOptions = {}): Promise<DataResult<void>> {
+    return this.graph.request<void>(graphGroupMembersRefUrl(groupId, memberId), { ...graphOptions(options), method: "DELETE" });
   }
 }
