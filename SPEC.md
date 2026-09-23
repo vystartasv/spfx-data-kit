@@ -26,6 +26,7 @@ Dependency-free TypeScript ESM library for injected request transport, typed Sha
 - Graph search: `GraphSearchAdapter`, typed entity/query/field/sort/page/hit contracts, bounded paging
 - Graph sites/lists: `GraphSitesAdapter`, site/list/item URL helpers, typed metadata/item/query/write types
 - Graph directory: `GraphDirectoryAdapter`, user/group/member URL helpers, typed metadata/query/write types
+- Graph sharing: `GraphSharingAdapter`, permission URL helpers, typed permission/link/invite/grant contracts
 - Manifest: `capabilityManifest`, `CAPABILITY_MANIFEST`
 
 §V
@@ -60,6 +61,9 @@ V28: SharePoint search req → POST `/_api/search/query` with typed query/select
 V29: SharePoint search paging → map `PrimaryQueryResult.RelevantResults` rows/`TotalRows`; follow exposed next page ≤ `maxPages`; ⊥ request after bound/repeated marker.
 V30: Graph search req → POST `/search/query` with ≥1 entity type, query text, optional fields/sort, bounded `from`/`size`; controls/errors preserve Graph behavior.
 V31: Graph search paging → map `hitsContainers` hits/total/more-results; no request after `maxPages`/`maxItems`/no-more/repeated offset; no ranking/semantic claims.
+V32: Graph sharing URL helpers → relative paths; drive/site/permission ids ! single path segments; sharing URLs ! absolute HTTP(S) before transport.
+V33: Graph sharing inputs → link type ∈ view|edit|embed; scope ∈ anonymous|organization|users; recipients valid non-empty email list; roles exactly one read|write; malformed input ⊥ transport.
+V34: Graph sharing list/get/createLink/invite/grant/delete → typed bodies/results, response ETags, `If-Match`, `AbortSignal`, `timeoutMs`; no follow-up requests; auth/escalation host-owned.
 
 §T
 id|status|task|cites
@@ -75,6 +79,7 @@ T9|x|add typed Graph drive/file metadata, bounded children paging, binary transf
 T10|x|add typed Graph sites/lists/list-item helpers, bounded queries, ETag writes, tests, and capability status|V1,V11,V13,V22-V24,I.api
 T11|x|add typed Graph users/groups/directory membership helpers, bounded queries, ref writes, tests, docs, and capability status|V1,V11,V13,V25-V27,I.api
 T12|x|add typed SharePoint and Graph search helpers, bounded paging, validation, tests, docs, manifest, and capability status|V1,V2,V5,V11,V12,V28-V31,I.api
+T13|x|add typed Graph permission and sharing helpers, strict validation, ETags, tests, docs, manifest, and capability status|V1,V2,V5,V11,V12,V32-V34,I.api
 
 §B
 id|date|cause|fix

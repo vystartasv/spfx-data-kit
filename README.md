@@ -5,7 +5,7 @@
 Authentication, authorization, URL discovery, and network access remain with the host through `RequestTransport`.
 
 ```ts
-import { DataClient, GraphAdapter, GraphDirectoryAdapter, GraphDriveAdapter, GraphSitesAdapter } from "spfx-data-kit";
+import { DataClient, GraphAdapter, GraphDirectoryAdapter, GraphDriveAdapter, GraphSharingAdapter, GraphSitesAdapter } from "spfx-data-kit";
 
 const client = new DataClient(transport, {
   retry: { maxRetries: 2 },
@@ -20,6 +20,8 @@ const sites = new GraphSitesAdapter(client);
 const site = await sites.getSite("site-id");
 const directory = new GraphDirectoryAdapter(client);
 const user = await directory.getCurrentUser({ select: ["id", "displayName"] });
+const sharing = new GraphSharingAdapter(client);
+const link = await sharing.createLink("drive-id", "item-id", { type: "view", scope: "organization" });
 ```
 
 The root export includes:
@@ -36,6 +38,7 @@ The root export includes:
 - `GraphDriveAdapter` for typed drive/root/item metadata, bounded children paging, binary file download, ETag-aware item update/delete, and bounded simple `Uint8Array` uploads (≤1,500,000 bytes);
 - `GraphSitesAdapter` for typed site-by-id/path and list metadata, OData list/item queries, bounded paging, list-item CRUD, response ETags, and optional `If-Match` writes without follow-up reads;
 - `GraphDirectoryAdapter` for typed current-user/user/group reads, bounded users/groups/group-members paging, OData select/filter/orderBy/top queries, and Graph `$ref` member add/remove without follow-up reads;
+- `GraphSharingAdapter` for typed drive-item/site permission list/get/delete, drive-item sharing links and invitations, sharing-link access grants, strict sharing validation, response ETags, and no follow-up reads;
 - transport `AbortSignal`/host-enforced timeout forwarding and structured service error details without changing `DataError.kind`;
 - `capabilityManifest` and `CAPABILITY_MANIFEST`.
 
@@ -52,4 +55,4 @@ npm run pack
 
 The package does not provide authentication, authorization, tenant discovery, persistent storage, offline storage, UI components, or network access.
 
-Graph mail, calendar, Teams, Planner, To Do, admin, provisioning, pages, navigation, profiles, taxonomy, resumable uploads, thumbnails, previews, permissions, broader Graph service families, large/resumable SharePoint uploads, and other PnP wrapper families remain planned or excluded; see [docs/pnp-parity.md](docs/pnp-parity.md).
+Graph mail, calendar, Teams, Planner, To Do, admin, provisioning, pages, navigation, profiles, taxonomy, resumable uploads, thumbnails, previews, broader Graph service families, large/resumable SharePoint uploads, and other PnP wrapper families remain planned or excluded; see [docs/pnp-parity.md](docs/pnp-parity.md). Authentication and authorization remain host-owned; this package never escalates permissions.

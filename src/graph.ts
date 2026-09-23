@@ -60,6 +60,32 @@ export interface GraphSearchResult<T = unknown> {
   readonly from: number;
   readonly size: number;
 }
+export type GraphPermissionLinkType = "view" | "edit" | "embed";
+export type GraphPermissionLinkScope = "anonymous" | "organization" | "users";
+export type GraphSharingRole = "read" | "write";
+export interface GraphPermissionLink { readonly type?: GraphPermissionLinkType; readonly scope?: GraphPermissionLinkScope; readonly webUrl?: string; readonly webHtml?: string; readonly [key: string]: unknown; }
+export interface GraphPermission { readonly id: string; readonly roles?: readonly string[]; readonly link?: GraphPermissionLink; readonly inheritedFrom?: unknown; readonly invitation?: unknown; readonly grantedTo?: unknown; readonly grantedToV2?: unknown; readonly [key: string]: unknown; }
+export interface GraphPermissionCollection { readonly value: readonly GraphPermission[]; readonly [key: string]: unknown; }
+export interface GraphSharingRecipient { readonly email: string; }
+export interface GraphCreateSharingLinkRequest {
+  readonly type: GraphPermissionLinkType;
+  readonly scope?: GraphPermissionLinkScope;
+  readonly expirationDateTime?: string;
+  readonly password?: string;
+  readonly retainInheritedPermissions?: boolean;
+}
+export interface GraphInviteRequest {
+  readonly recipients: readonly GraphSharingRecipient[];
+  readonly roles: readonly GraphSharingRole[];
+  readonly requireSignIn?: boolean;
+  readonly sendInvitation?: boolean;
+  readonly message?: string;
+  readonly expirationDateTime?: string;
+  readonly password?: string;
+  readonly retainInheritedPermissions?: boolean;
+}
+export interface GraphGrantAccessRequest { readonly recipients: readonly GraphSharingRecipient[]; readonly roles: readonly GraphSharingRole[]; }
+export interface GraphPermissionQuery extends GraphRequestOptions { readonly select?: readonly string[]; }
 export type GraphDirectoryRequestOptions = GraphDirectoryQuery;
 export type GraphDirectoryWriteOptions = GraphRequestOptions;
 export type GraphSiteRequestOptions = GraphRequestOptions;
@@ -113,6 +139,10 @@ const graphQuery = (path: string, options: GraphListQuery | GraphDirectoryQuery)
   }
   if (options.top !== undefined) add("$top", options.top);
   return values.length === 0 ? path : `${path}?${values.join("&")}`;
+};
+const graphPermissionQuery = (path: string, options: GraphPermissionQuery): string => {
+  if (options.select?.some((field) => typeof field !== "string" || field.trim() === "")) throw new DataError("validation", "Graph permission select must contain non-empty strings");
+  return options.select?.length ? `${path}?$select=${encodeURIComponent(options.select.join(","))}` : path;
 };
 const emptyGraphPage = <T>(): GraphPage<T> => ({ value: [] });
 const validateSearch = (request: GraphSearchRequest): void => {
@@ -175,6 +205,61 @@ export function graphGroupUrl(groupId: string): string { return `${graphGroupsUr
 export function graphGroupMembersUrl(groupId: string): string { return `${graphGroupUrl(groupId)}/members`; }
 export function graphGroupMembersRefUrl(groupId: string, memberId: string): string { return `${graphGroupMembersUrl(groupId)}/${graphSegment(memberId, "Graph group member id")}/$ref`; }
 export function graphDirectoryObjectUrl(objectId: string): string { return `/directoryObjects/${graphSegment(objectId, "Graph directory object id")}`; }
+export function graphDriveItemPermissionsUrl(driveId: string, itemId: string): string { return `${graphDriveItemUrl(driveId, itemId)}/permissions`; }
+export function graphDriveItemPermissionUrl(driveId: string, itemId: string, permissionId: string): string { return `${graphDriveItemPermissionsUrl(driveId, itemId)}/${graphSegment(permissionId, "Graph permission id")}`; }
+export function graphDriveItemCreateLinkUrl(driveId: string, itemId: string): string { return `${graphDriveItemUrl(driveId, itemId)}/createLink`; }
+export function graphDriveItemInviteUrl(driveId: string, itemId: string): string { return `${graphDriveItemUrl(driveId, itemId)}/invite`; }
+export function graphSitePermissionsUrl(siteId: string): string { return `${graphSiteUrl(siteId)}/permissions`; }
+export function graphSitePermissionUrl(siteId: string, permissionId: string): string { return `${graphSitePermissionsUrl(siteId)}/${graphSegment(permissionId, "Graph permission id")}`; }
+
+const sharingUrlEncoding = (sharingUrl: string): string => {
+  if (typeof sharingUrl !== "string" || sharingUrl.length === 0 || /\s/.test(sharingUrl)) throw new DataError("validation", "Graph sharing URL must be a non-empty HTTP(S) URL");
+  let parsed: URL;
+  try { parsed = new URL(sharingUrl); } catch (cause) { throw new DataError("validation", "Graph sharing URL is invalid", cause); }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new DataError("validation", "Graph sharing URL must be a non-empty HTTP(S) URL");
+  let binary = "";
+  for (const byte of new TextEncoder().encode(sharingUrl)) binary += String.fromCharCode(byte);
+  return `u!${btoa(binary).replaceAll("=", "").replaceAll("/", "_").replaceAll("+", "-")}`;
+};
+export function graphSharingPermissionGrantUrl(sharingUrl: string): string { return `/shares/${sharingUrlEncoding(sharingUrl)}/permission/grant`; }
+export function encodeGraphSharingUrl(sharingUrl: string): string { return sharingUrlEncoding(sharingUrl); }
+
+const validateDateTime = (value: unknown, label: string): void => {
+  if (value !== undefined && (typeof value !== "string" || Number.isNaN(Date.parse(value)))) throw new DataError("validation", `${label} must be a valid date-time string`);
+};
+function validateSharingRecipientList(recipients: unknown): asserts recipients is readonly GraphSharingRecipient[] {
+  if (!Array.isArray(recipients) || recipients.length === 0 || recipients.some((recipient) => {
+    if (typeof recipient !== "object" || recipient === null || Array.isArray(recipient)) return true;
+    const email = (recipient as { email?: unknown }).email;
+    return typeof email !== "string" || email.length === 0 || /\s/.test(email) || email.indexOf("@") <= 0 || email.indexOf("@") !== email.lastIndexOf("@");
+  })) throw new DataError("validation", "Graph sharing recipients must contain at least one valid email recipient");
+}
+function validateSharingRoles(roles: unknown): asserts roles is readonly GraphSharingRole[] {
+  if (!Array.isArray(roles) || roles.length !== 1 || (roles[0] !== "read" && roles[0] !== "write")) throw new DataError("validation", "Graph sharing roles must contain exactly one read or write role");
+}
+const validateCreateLink = (request: GraphCreateSharingLinkRequest): void => {
+  if (typeof request !== "object" || request === null || !["view", "edit", "embed"].includes(request.type)) throw new DataError("validation", "Graph sharing link type is invalid");
+  if (request.scope !== undefined && !["anonymous", "organization", "users"].includes(request.scope)) throw new DataError("validation", "Graph sharing link scope is invalid");
+  if (request.password !== undefined && (typeof request.password !== "string" || request.password.length === 0)) throw new DataError("validation", "Graph sharing link password must be non-empty");
+  if (request.retainInheritedPermissions !== undefined && typeof request.retainInheritedPermissions !== "boolean") throw new DataError("validation", "Graph sharing retainInheritedPermissions must be boolean");
+  validateDateTime(request.expirationDateTime, "Graph sharing expirationDateTime");
+};
+const validateInvite = (request: GraphInviteRequest): void => {
+  if (typeof request !== "object" || request === null) throw new DataError("validation", "Graph sharing invite request is invalid");
+  validateSharingRecipientList(request.recipients);
+  validateSharingRoles(request.roles);
+  for (const [name, value] of [["requireSignIn", request.requireSignIn], ["sendInvitation", request.sendInvitation], ["retainInheritedPermissions", request.retainInheritedPermissions]] as const) {
+    if (value !== undefined && typeof value !== "boolean") throw new DataError("validation", `Graph sharing ${name} must be boolean`);
+  }
+  if (request.message !== undefined && (typeof request.message !== "string" || request.message.length > 2_000)) throw new DataError("validation", "Graph sharing message must be at most 2,000 characters");
+  if (request.password !== undefined && (typeof request.password !== "string" || request.password.length === 0)) throw new DataError("validation", "Graph sharing invite password must be non-empty");
+  validateDateTime(request.expirationDateTime, "Graph sharing expirationDateTime");
+};
+const validateGrant = (request: GraphGrantAccessRequest): void => {
+  if (typeof request !== "object" || request === null) throw new DataError("validation", "Graph sharing grant request is invalid");
+  validateSharingRecipientList(request.recipients);
+  validateSharingRoles(request.roles);
+};
 
 export class GraphAdapter {
   private readonly baseUrl: string;
@@ -481,5 +566,47 @@ export class GraphDirectoryAdapter {
   }
   removeMember(groupId: string, memberId: string, options: GraphDirectoryWriteOptions = {}): Promise<DataResult<void>> {
     return this.graph.request<void>(graphGroupMembersRefUrl(groupId, memberId), { ...graphOptions(options), method: "DELETE" });
+  }
+}
+
+export class GraphSharingAdapter {
+  private readonly graph: GraphAdapter;
+  constructor(client: DataClient, options: GraphAdapterOptions = {}) { this.graph = new GraphAdapter(client, options); }
+
+  private async permissionPage<T extends GraphPermission = GraphPermission>(path: string, options: GraphPermissionQuery): Promise<DataResult<GraphPage<T>>> {
+    const result = await this.graph.request<unknown>(path, { ...graphOptions(options), method: "GET" });
+    const page = pagePayload<T>(result.data);
+    return result.etag === undefined ? { data: page } : { data: page, etag: result.etag };
+  }
+
+  listDriveItemPermissions<T extends GraphPermission = GraphPermission>(driveId: string, itemId: string, options: GraphPermissionQuery = {}): Promise<DataResult<GraphPage<T>>> {
+    return this.permissionPage<T>(graphPermissionQuery(graphDriveItemPermissionsUrl(driveId, itemId), options), options);
+  }
+  listSitePermissions<T extends GraphPermission = GraphPermission>(siteId: string, options: GraphPermissionQuery = {}): Promise<DataResult<GraphPage<T>>> {
+    return this.permissionPage<T>(graphPermissionQuery(graphSitePermissionsUrl(siteId), options), options);
+  }
+  getDriveItemPermission<T extends GraphPermission = GraphPermission>(driveId: string, itemId: string, permissionId: string, options: GraphPermissionQuery = {}): Promise<DataResult<T>> {
+    return this.graph.request<T>(graphPermissionQuery(graphDriveItemPermissionUrl(driveId, itemId, permissionId), options), { ...graphOptions(options), method: "GET" });
+  }
+  getSitePermission<T extends GraphPermission = GraphPermission>(siteId: string, permissionId: string, options: GraphPermissionQuery = {}): Promise<DataResult<T>> {
+    return this.graph.request<T>(graphPermissionQuery(graphSitePermissionUrl(siteId, permissionId), options), { ...graphOptions(options), method: "GET" });
+  }
+  createLink<T extends GraphPermission = GraphPermission>(driveId: string, itemId: string, request: GraphCreateSharingLinkRequest, options: GraphRequestOptions = {}): Promise<DataResult<T>> {
+    validateCreateLink(request);
+    return this.graph.request<T>(graphDriveItemCreateLinkUrl(driveId, itemId), { ...graphOptions(options), method: "POST", body: request });
+  }
+  invite<T extends GraphPermissionCollection = GraphPermissionCollection>(driveId: string, itemId: string, request: GraphInviteRequest, options: GraphRequestOptions = {}): Promise<DataResult<T>> {
+    validateInvite(request);
+    return this.graph.request<T>(graphDriveItemInviteUrl(driveId, itemId), { ...graphOptions(options), method: "POST", body: request });
+  }
+  grantAccess<T extends GraphPermissionCollection = GraphPermissionCollection>(sharingUrl: string, request: GraphGrantAccessRequest, options: GraphRequestOptions = {}): Promise<DataResult<T>> {
+    validateGrant(request);
+    return this.graph.request<T>(graphSharingPermissionGrantUrl(sharingUrl), { ...graphOptions(options), method: "POST", body: request });
+  }
+  deleteDriveItemPermission(driveId: string, itemId: string, permissionId: string, options: GraphRequestOptions = {}): Promise<DataResult<void>> {
+    return this.graph.request<void>(graphDriveItemPermissionUrl(driveId, itemId, permissionId), { ...graphOptions(options), method: "DELETE" });
+  }
+  deleteSitePermission(siteId: string, permissionId: string, options: GraphRequestOptions = {}): Promise<DataResult<void>> {
+    return this.graph.request<void>(graphSitePermissionUrl(siteId, permissionId), { ...graphOptions(options), method: "DELETE" });
   }
 }
