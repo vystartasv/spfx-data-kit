@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="spfx-data-kit is a dependency-free TypeScript ESM data layer for SharePoint REST and Microsoft Graph.">
+  <title>spfx-data-kit — native data access for SPFx</title>
+  <link rel="stylesheet" href="static/site.css">
+  <script>
+    (function () {
+      try {
+        var theme = localStorage.getItem("spfx-data-kit-theme");
+        if (theme === "light" || theme === "auto" || theme === "dark") document.documentElement.dataset.theme = theme;
+      } catch (_) {}
+    }());
+  </script>
+  <script defer src="static/site.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <div class="wrap nav">
+      <a class="brand" href="./" aria-label="spfx-data-kit home"><span class="brand-mark" aria-hidden="true">/</span>spfx-data-kit</a>
+      <nav class="nav-links" aria-label="Primary">
+        <a href="#capabilities">Capabilities</a>
+        <a href="#quickstart">Quickstart</a>
+        <a href="#boundaries">Boundaries</a>
+        <a href="#evidence">Evidence</a>
+        <a class="nav-cta" href="https://github.com/vystartasv/spfx-data-kit">View source <span aria-hidden="true">↗</span></a>
+      </nav>
+      <fieldset class="theme-switcher">
+        <legend>Theme</legend>
+        <label><input type="radio" name="theme" value="light"> <span>Light</span></label>
+        <label><input type="radio" name="theme" value="auto"> <span>Auto</span></label>
+        <label><input type="radio" name="theme" value="dark"> <span>Dark</span></label>
+      </fieldset>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero">
+      <div class="wrap hero-grid">
+        <div>
+          <p class="eyebrow">Typed data access / SPFx</p>
+          <h1>Keep the data layer <em>close to the platform.</em></h1>
+          <p class="lede">A dependency-free TypeScript ESM package for SharePoint REST list CRUD and Microsoft Graph JSON batch results, with a small transport boundary your host controls.</p>
+          <div class="actions">
+            <a class="button" href="#quickstart">See the quickstart <span aria-hidden="true">↓</span></a>
+            <a class="button secondary" href="https://github.com/vystartasv/spfx-data-kit">Read the source <span aria-hidden="true">↗</span></a>
+          </div>
+          <p class="hero-note"><span class="signal" aria-hidden="true"></span><span><strong>Small by design.</strong> Authentication, authorization, tenant discovery, and network policy stay with the SPFx or browser host.</span></p>
+        </div>
+
+        <div class="terminal">
+          <div class="terminal-bar"><span class="terminal-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="terminal-title">host-transport.ts</span><button class="copy-button" type="button" data-copy-target="transport-example"><span class="copy-label">Copy</span></button><span class="copy-status" role="status" aria-live="polite"></span></div>
+          <pre id="transport-example"><code>import { DataClient } from "spfx-data-kit";
+import type { RequestTransport } from "spfx-data-kit";
+
+const transport: RequestTransport = {
+  request: (url, options) =&gt; fetch(url, options),
+};
+
+const client = new DataClient(transport, {
+  cache: { maxEntries: 100, ttlMs: 30_000 },
+});</code></pre>
+          <p class="terminal-caption"><strong>Host seam:</strong> use an existing authenticated request client here when the app needs one.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-rule" id="capabilities" aria-labelledby="capabilities-heading">
+      <div class="wrap">
+        <p class="eyebrow">What is in the package</p>
+        <h2 id="capabilities-heading">Native pieces, composed plainly.</h2>
+        <p class="section-intro">The runtime owns request coordination and typed service adapters. It does not try to become your auth layer, state store, or UI framework.</p>
+        <div class="capability-grid">
+          <article class="card"><p class="card-kicker">01 / transport</p><h3>Bring the request policy.</h3><p>Inject any host that implements <code>RequestTransport</code>: SPFx, browser <code>fetch</code>, tests, or another authenticated runtime.</p></article>
+          <article class="card"><p class="card-kicker">02 / client</p><h3>Deduplicate and bound GETs.</h3><p>In-flight GET deduplication, optional bounded in-memory TTL caching, invalidation, diagnostics, and bounded GET retries.</p></article>
+          <article class="card"><p class="card-kicker">03 / SharePoint</p><h3>Keep list CRUD typed.</h3><p>Paging, select/expand/filter/orderBy/top, mapped entities, create/update/delete, and per-item ETags for SharePoint REST lists.</p></article>
+          <article class="card"><p class="card-kicker">04 / Graph</p><h3>Parse JSON batches safely.</h3><p>Graph requests return typed data and ETags; batch results preserve child status, headers, bodies, and failures.</p></article>
+          <article class="card"><p class="card-kicker">05 / consistency</p><h3>Make writes explicit.</h3><p>SharePoint writes can send <code>IF-MATCH</code>, invalidate list reads, and re-read the resulting item after a write.</p></article>
+          <article class="card"><p class="card-kicker">06 / errors</p><h3>Keep failure useful.</h3><p>Stable <code>DataError.kind</code> values expose status, cause, and retry timing without leaking service payloads into messages.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="flow-heading">
+      <div class="wrap">
+        <p class="eyebrow">The shape of a request</p>
+        <h2 id="flow-heading">One boundary. Several useful adapters.</h2>
+        <div class="workflow">
+          <article class="workflow-step"><h3>Host</h3><p>Supplies URL discovery, credentials, headers, and network access.</p></article>
+          <article class="workflow-step"><h3>Client</h3><p>Coordinates GET identity, cache, dedupe, retries, and diagnostics.</p></article>
+          <article class="workflow-step"><h3>SharePoint</h3><p>Builds list URLs and maps REST rows into your entity type.</p></article>
+          <article class="workflow-step"><h3>Graph</h3><p>Builds requests and validates the service's batch response shape.</p></article>
+          <article class="workflow-step"><h3>Your app</h3><p>Receives typed results and decides how to render or persist them.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-rule" id="quickstart" aria-labelledby="quickstart-heading">
+      <div class="wrap quickstart-grid">
+        <div>
+          <p class="eyebrow">Quickstart</p>
+          <h2 id="quickstart-heading">Start from the source, keep the host in charge.</h2>
+          <p class="section-intro">The package is not published to npm yet. This is the reproducible path for the current repository: clone it, install its locked development toolchain, and build the ESM output.</p>
+          <div class="notice"><strong>Current distribution status:</strong> no npm package is linked here because <code>spfx-data-kit</code> is not currently published in the public registry.</div>
+        </div>
+        <div class="code-stack">
+          <div class="code-block">
+            <div class="code-heading"><span>checkout</span><button class="copy-button light-copy" type="button" data-copy-target="install-example"><span class="copy-label">Copy</span></button><span class="copy-status" role="status" aria-live="polite"></span></div>
+            <pre id="install-example"><code>git clone https://github.com/vystartasv/spfx-data-kit.git
+cd spfx-data-kit
+npm ci
+npm run build</code></pre>
+          </div>
+          <div class="code-block">
+            <div class="code-heading"><span>use the client</span><button class="copy-button light-copy" type="button" data-copy-target="client-example"><span class="copy-label">Copy</span></button><span class="copy-status" role="status" aria-live="polite"></span></div>
+            <pre id="client-example"><code>const result = await client.get&lt;{ id: string }&gt;(
+  "https://tenant.example/_api/web/currentuser"
+);
+
+console.log(result.id);</code></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="boundaries" aria-labelledby="boundaries-heading">
+      <div class="wrap">
+        <p class="eyebrow">Honest boundaries</p>
+        <h2 id="boundaries-heading">Useful because the limits are visible.</h2>
+        <div class="boundary-grid">
+          <article class="boundary-card"><h3>Included</h3><p>Transport contracts, GET coordination, typed SharePoint REST list operations, Graph requests, JSON batch parsing, ETag handling, stable errors, and a capability manifest.</p></article>
+          <article class="boundary-card no"><h3>Not included</h3><p>Authentication, authorization, tenant discovery, persistent or offline storage, UI components, telemetry, server code, and PnPjs.</p></article>
+          <article class="boundary-card"><h3>Service limits remain real</h3><p>Graph JSON batches are capped at 20 child requests. SharePoint batch children are GET-only in this adapter. The host and service still own their policies.</p></article>
+          <article class="boundary-card no"><h3>No performance theatre</h3><p>There are no fabricated benchmarks, tenant-wide claims, or production-scale guarantees on this page. Inspect the source and run the checks for the behavior you need.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-rule" id="evidence" aria-labelledby="evidence-heading">
+      <div class="wrap">
+        <p class="eyebrow">Evidence / current checkout</p>
+        <h2 id="evidence-heading">Read the contract, then run it.</h2>
+        <p class="section-intro">This page is a compact map of the repository. The README and SPEC are the source of truth for public behavior and invariants.</p>
+        <div class="evidence-grid">
+          <article class="evidence-card"><span class="evidence-value">0.2.0</span><span class="evidence-label">package version</span></article>
+          <article class="evidence-card"><span class="evidence-value">17</span><span class="evidence-label">deterministic tests passing</span></article>
+          <article class="evidence-card"><span class="evidence-value">0</span><span class="evidence-label">runtime dependencies</span></article>
+          <article class="evidence-card"><span class="evidence-value">20</span><span class="evidence-label">Graph batch child limit</span></article>
+        </div>
+        <div class="source-row">
+          <a href="https://github.com/vystartasv/spfx-data-kit/blob/main/README.md">README / usage</a>
+          <a href="https://github.com/vystartasv/spfx-data-kit/blob/main/SPEC.md">SPEC / invariants</a>
+          <a href="https://github.com/vystartasv/spfx-data-kit">GitHub / source</a>
+          <span class="source-note">Last verified in this checkout: 23 September 2026.</span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer-grid">
+      <p><span class="brand">spfx-data-kit</span> · typed transport and service adapters for SPFx · dependency-free runtime</p>
+      <p class="footer-links"><a href="https://github.com/vystartasv/spfx-data-kit">GitHub</a><a href="llms.txt">Agent notes</a></p>
+    </div>
+  </footer>
+</body>
+</html>

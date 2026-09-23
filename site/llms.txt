@@ -1,0 +1,21 @@
+# spfx-data-kit
+
+> Dependency-free TypeScript ESM data access for SharePoint REST lists and Microsoft Graph JSON batch results.
+
+## What it is
+
+- An injected `RequestTransport` boundary for SPFx, browser `fetch`, tests, or another host runtime.
+- `DataClient` with in-flight GET deduplication, optional bounded in-memory TTL caching, invalidation, diagnostics, and bounded GET retries.
+- `SharePointRestAdapter` for typed list paging, query construction, CRUD, ETags, and GET-only REST batch result parsing.
+- `GraphAdapter` for Graph requests, response-header ETags, and JSON batch results.
+- Stable `DataError.kind` values and a capability manifest at `spfx-data-kit/capabilities`.
+
+## Boundaries
+
+Authentication, authorization, tenant discovery, URL discovery, and network access belong to the host. The package does not include PnPjs, persistent/offline storage, UI components, server code, telemetry, or performance benchmarks. Graph JSON batches accept at most 20 child requests; SharePoint batch children are GET-only.
+
+## Evidence
+
+The current checkout is version 0.2.0, has 17 deterministic tests, and has no runtime dependencies. Read the [README](https://github.com/vystartasv/spfx-data-kit/blob/main/README.md), [SPEC](https://github.com/vystartasv/spfx-data-kit/blob/main/SPEC.md), and [source repository](https://github.com/vystartasv/spfx-data-kit) for the contract and checks.
+
+The package is not currently published to the public npm registry; the site intentionally does not link to an npm install target.
