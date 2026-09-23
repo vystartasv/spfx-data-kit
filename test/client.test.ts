@@ -93,6 +93,20 @@ test("DataClient forwards signal and timeout and does not retry an aborted reque
   assert.equal(calls.at(-1)?.timeoutMs, 250);
 });
 
+test("DataClient exposes binary responses without changing text transport callers", async () => {
+  const bytes = new Uint8Array([0, 255, 1]);
+  let requestOptions: { responseType?: string; signal?: AbortSignal; timeoutMs?: number } | undefined;
+  const controller = new AbortController();
+  const client = new DataClient({ request: async (_url, options) => {
+    requestOptions = options;
+    return { status: 200, text: async () => "ignored", arrayBuffer: async () => bytes.slice().buffer as ArrayBuffer };
+  } }, { retry: { maxRetries: 0 } });
+  assert.deepEqual([...await client.requestBytes("https://example.test/file", { signal: controller.signal, timeoutMs: 75 })], [0, 255, 1]);
+  assert.equal(requestOptions?.responseType, "binary");
+  assert.equal(requestOptions?.signal, controller.signal);
+  assert.equal(requestOptions?.timeoutMs, 75);
+});
+
 test("DataClient retains structured HTTP error details", async () => {
   const client = new DataClient({ request: async () => ({
     status: 400,

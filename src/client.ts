@@ -5,7 +5,7 @@ export interface CacheOptions { readonly maxEntries: number; readonly ttlMs: num
 export interface RetryOptions { readonly maxRetries?: number; readonly sleep?: (milliseconds: number) => Promise<void>; readonly now?: () => number; }
 export interface DataClientOptions { readonly cache?: CacheOptions; readonly retry?: RetryOptions; readonly signal?: AbortSignal; readonly timeoutMs?: number; }
 export interface ClientDiagnostics { readonly requests: number; readonly cacheHits: number; readonly deduplicated: number; readonly retries: number; readonly failures: number; }
-export interface RawDataResponse { readonly status: number; readonly headers: ResponseHeaders; readonly text: string; }
+export interface RawDataResponse { readonly status: number; readonly headers: ResponseHeaders; readonly text: string; readonly bytes?: Uint8Array; }
 
 type CacheEntry = { expiresAt: number; value: unknown };
 const defaultSleep = (milliseconds: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -58,6 +58,11 @@ export class DataClient {
   }
   diagnostics(): ClientDiagnostics { return { ...this.counters }; }
   async get<T>(url: string, options: Omit<DataRequest, "url" | "method"> = {}): Promise<T> { return this.request<T>({ ...options, url, method: "GET" }); }
+  async requestBytes(url: string, options: Omit<DataRequest, "url" | "method" | "responseType"> = {}): Promise<Uint8Array> {
+    const response = await this.requestRaw({ ...options, url, method: "GET", responseType: "binary" });
+    if (!response.bytes) throw new DataError("unknown", "The transport did not provide a binary response", undefined, response.status);
+    return response.bytes;
+  }
 
   async request<T>(request: DataRequest): Promise<T> {
     const normalized = { ...request, method: (request.method ?? "GET").toUpperCase() };
@@ -105,7 +110,7 @@ export class DataClient {
       this.counters = { ...this.counters, requests: this.counters.requests + 1 };
       let response: TransportResponse;
       try {
-        response = await this.transport.request(request.url, { method, headers: request.headers, body: request.body, signal, timeoutMs });
+        response = await this.transport.request(request.url, { method, headers: request.headers, body: request.body, responseType: request.responseType, signal, timeoutMs });
       } catch (cause) {
         if (signal?.aborted) {
           this.counters = { ...this.counters, failures: this.counters.failures + 1 };
@@ -122,8 +127,17 @@ export class DataClient {
         continue;
       }
       const headers = responseHeaders(response);
-      const text = await response.text();
-      if (response.status >= 200 && response.status < 300) return { status: response.status, headers, text };
+      let bytes: Uint8Array | undefined;
+      let text: string;
+      if (request.responseType === "binary" && response.arrayBuffer) {
+        bytes = new Uint8Array(await response.arrayBuffer());
+        text = response.status >= 200 && response.status < 300 ? "" : new TextDecoder().decode(bytes);
+      } else if (request.responseType === "binary" && response.status >= 200 && response.status < 300) {
+        throw new DataError("unknown", "The transport does not support binary responses", undefined, response.status);
+      } else {
+        text = await response.text();
+      }
+      if (response.status >= 200 && response.status < 300) return { status: response.status, headers, text, ...(bytes === undefined ? {} : { bytes }) };
       let details: unknown;
       if (text.trim()) {
         try { details = JSON.parse(text); } catch { /* keep the response body out of structured details */ }

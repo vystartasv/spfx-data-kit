@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DataClient, SharePointRestAdapter, sharePointListItemsUrl } from "../src/index.js";
+import { DataClient, DataError, SharePointFilesAdapter, SharePointRestAdapter, sharePointAttachmentDownloadUrl, sharePointFileDownloadUrl, sharePointFileUploadUrl, sharePointFolderChildrenUrl, sharePointListItemsUrl } from "../src/index.js";
 import { ScriptedTransport } from "./helpers.js";
 
 type Todo = { id: number; title: string };
@@ -15,6 +15,68 @@ const adapter = (transport: ScriptedTransport) => new SharePointRestAdapter<Todo
 
 test("SharePoint list URLs escape OData quotes and URL characters", () => {
   assert.equal(sharePointListItemsUrl("https://tenant.test/sites/demo", "O'Brien / 100%"), "https://tenant.test/sites/demo/_api/web/lists/getbytitle('O''Brien%20%2F%20100%25')/items");
+});
+
+test("SharePoint file URLs encode paths and stay inside the configured site", () => {
+  assert.equal(sharePointFileDownloadUrl("https://tenant.test/sites/demo/", "/sites/demo/Shared Documents/O'Brien.txt"), "https://tenant.test/sites/demo/_api/web/GetFileByServerRelativeUrl('/sites/demo/Shared%20Documents/O''Brien.txt')/$value");
+  assert.equal(sharePointFolderChildrenUrl("https://tenant.test/sites/demo", "Shared Documents"), "https://tenant.test/sites/demo/_api/web/GetFolderByServerRelativeUrl('/sites/demo/Shared%20Documents')?$expand=Folders,Files");
+  assert.equal(sharePointFileUploadUrl("https://tenant.test/sites/demo", "/sites/demo/Shared Documents", "a b.txt", true), "https://tenant.test/sites/demo/_api/web/GetFolderByServerRelativeUrl('/sites/demo/Shared%20Documents')/Files/add(url='a%20b.txt',overwrite=true)");
+  assert.throws(() => sharePointFileDownloadUrl("https://tenant.test/sites/demo", "/sites/other/a.txt"), (error: unknown) => error instanceof DataError && error.kind === "validation");
+});
+
+test("SharePoint files adapter downloads, uploads, forwards controls, and does not re-fetch", async () => {
+  const controller = new AbortController();
+  const transport = new ScriptedTransport([
+    { status: 200, bytes: new Uint8Array([0, 255, 2]) },
+    { status: 201, body: JSON.stringify({ d: { Name: "new.txt", ServerRelativeUrl: "/sites/demo/Shared Documents/new.txt", ETag: '"2"' } }) },
+  ]);
+  const files = new SharePointFilesAdapter(new DataClient(transport, { retry: { maxRetries: 0 } }), { siteUrl: "https://tenant.test/sites/demo", listTitle: "Todo's" });
+  assert.deepEqual([...await files.downloadFile("/sites/demo/Shared Documents/a.bin", { signal: controller.signal, timeoutMs: 125 })], [0, 255, 2]);
+  const result = await files.uploadFile("/sites/demo/Shared Documents", "new.txt", new Uint8Array([1, 2]), { overwrite: true, etag: '"1"' });
+  assert.equal(result.etag, '"2"');
+  assert.equal(transport.calls.length, 2);
+  assert.equal(transport.calls[0].options.responseType, "binary");
+  assert.equal(transport.calls[0].options.signal, controller.signal);
+  assert.equal(transport.calls[0].options.timeoutMs, 125);
+  assert.deepEqual(transport.calls[1].options.body, new Uint8Array([1, 2]));
+  assert.equal(transport.calls[1].options.headers?.["IF-MATCH"], '"1"');
+});
+
+test("SharePoint files adapter reads expanded folder children and attachments with ETags", async () => {
+  const transport = new ScriptedTransport([
+    { status: 200, body: JSON.stringify({ d: { Files: { results: [{ Name: "a.txt", ServerRelativeUrl: "/sites/demo/Docs/a.txt" }] }, Folders: { results: [{ Name: "sub", ServerRelativeUrl: "/sites/demo/Docs/sub" }] }, ETag: '"folder"' } }) },
+    { status: 200, body: JSON.stringify({ value: [{ FileName: "a.txt", ServerRelativeUrl: "/sites/demo/Lists/Todo/Attachments/1/a.txt", ETag: '"attachment"' }] }) },
+  ]);
+  const files = new SharePointFilesAdapter(new DataClient(transport, { retry: { maxRetries: 0 } }), { siteUrl: "https://tenant.test/sites/demo", listTitle: "Todo" });
+  assert.deepEqual(await files.folderChildren("/sites/demo/Docs"), {
+    data: { files: [{ Name: "a.txt", ServerRelativeUrl: "/sites/demo/Docs/a.txt" }], folders: [{ Name: "sub", ServerRelativeUrl: "/sites/demo/Docs/sub" }] },
+    etag: '"folder"',
+  });
+  assert.deepEqual(await files.listAttachments(1), {
+    data: [{ FileName: "a.txt", ServerRelativeUrl: "/sites/demo/Lists/Todo/Attachments/1/a.txt", ETag: '"attachment"' }],
+    etags: { "a.txt": '"attachment"' },
+  });
+  assert.match(transport.calls[0].url, /\$expand=Folders,Files/);
+  assert.match(transport.calls[1].url, /getbytitle\('Todo'\)\/items\(1\)\/AttachmentFiles$/);
+  assert.equal(sharePointAttachmentDownloadUrl("https://tenant.test/sites/demo", "Todo", 1, "a.txt"), "https://tenant.test/sites/demo/_api/web/lists/getbytitle('Todo')/items(1)/AttachmentFiles('a.txt')/$value");
+});
+
+test("SharePoint attachment delete forwards ETag and binary controls", async () => {
+  const controller = new AbortController();
+  const transport = new ScriptedTransport([{ status: 204 }]);
+  const files = new SharePointFilesAdapter(new DataClient(transport, { retry: { maxRetries: 0 } }), { siteUrl: "https://tenant.test/sites/demo", listTitle: "Todo" });
+  await files.deleteAttachment(4, "a.txt", { etag: '"9"', signal: controller.signal, timeoutMs: 300 });
+  assert.equal(transport.calls[0].options.headers?.["IF-MATCH"], '"9"');
+  assert.equal(transport.calls[0].options.signal, controller.signal);
+  assert.equal(transport.calls[0].options.timeoutMs, 300);
+});
+
+test("SharePoint files adapter rejects malformed metadata and oversized uploads without network", async () => {
+  const transport = new ScriptedTransport([{ status: 200, body: JSON.stringify({ d: { Name: "missing-url" } }) }]);
+  const files = new SharePointFilesAdapter(new DataClient(transport, { retry: { maxRetries: 0 } }), { siteUrl: "https://tenant.test/sites/demo", listTitle: "Todo" });
+  await assert.rejects(files.getFile("/sites/demo/Docs/a.txt"), (error: unknown) => error instanceof DataError && error.kind === "unknown" && /malformed file/.test(error.message));
+  await assert.rejects(files.uploadFile("/sites/demo/Docs", "large.bin", new Uint8Array(1_500_001)), (error: unknown) => error instanceof DataError && error.kind === "validation");
+  assert.equal(transport.calls.length, 1);
 });
 
 test("SharePoint adapter builds queries, follows pages, caps items, and returns ETags", async () => {

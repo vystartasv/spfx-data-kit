@@ -1,6 +1,6 @@
 # spfx-data-kit
 
-`spfx-data-kit` is a dependency-free TypeScript ESM library for request transport, typed SharePoint REST list CRUD, and Microsoft Graph JSON batch results.
+`spfx-data-kit` is a dependency-free TypeScript ESM library for request transport, typed SharePoint REST data access, and Microsoft Graph JSON batch results.
 
 Authentication, authorization, URL discovery, and network access remain with the host through `RequestTransport`.
 
@@ -21,7 +21,9 @@ The root export includes:
 - transport, CRUD, query, result, and error contracts;
 - `DataError` and HTTP/JSON error helpers;
 - `DataClient` with GET deduplication, bounded in-memory TTL caching, invalidation, diagnostics, and bounded GET retries;
+- binary-safe `Uint8Array` transport bodies/responses through `DataClient.requestBytes`;
 - `SharePointRestAdapter` for list paging, query construction, ETags, CRUD, and GET-only batch result parsing;
+- `SharePointFilesAdapter` for site-scoped file/folder metadata, one-request folder children, binary downloads, bounded small uploads (≤1,500,000 bytes), and list-item attachment metadata/download/upload/delete;
 - `GraphAdapter` for Graph requests with cached/deduplicated GETs, response-header ETags, page/delta parsing, bounded async iteration, and JSON batch result parsing;
 - transport `AbortSignal`/host-enforced timeout forwarding and structured service error details without changing `DataError.kind`;
 - `capabilityManifest` and `CAPABILITY_MANIFEST`.
@@ -38,3 +40,5 @@ npm run pack
 ```
 
 The package does not provide authentication, authorization, tenant discovery, persistent storage, offline storage, UI components, or network access.
+
+Large/resumable SharePoint uploads, drives, provisioning, pages, navigation, profiles, search, taxonomy, and other PnP wrapper families remain planned or excluded; see [docs/pnp-parity.md](docs/pnp-parity.md).

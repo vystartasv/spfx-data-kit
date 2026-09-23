@@ -15,8 +15,17 @@ export const capabilityManifest = {
     "abort-signal-timeout-forwarding",
     "structured-error-details",
     "etag-if-match",
+    "binary-uint8array-transport",
+    "sharepoint-files-folders-attachments",
   ],
-  limits: { graphJsonBatchMaxRequests: 20, cacheRequiresExplicitBounds: true },
+  status: {
+    sharepointFilesFoldersAttachments: "partial",
+    sharepointSmallUpload: "present",
+    sharepointLargeResumableUpload: "planned",
+    sharepointDrivesProvisioningPagesNavigationProfilesSearchTaxonomy: "planned",
+    fluentPnPCompatibility: "excluded",
+  },
+  limits: { graphJsonBatchMaxRequests: 20, sharepointSmallUploadMaxBytes: 1_500_000, cacheRequiresExplicitBounds: true },
   boundaries: ["authentication", "authorization", "tenant-discovery", "offline-storage", "persistent-storage", "performance-benchmarks"],
 } as const;
 

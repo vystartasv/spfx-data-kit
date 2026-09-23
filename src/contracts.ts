@@ -6,14 +6,22 @@ export interface HeaderCollection {
   forEach(callback: (value: string, name: string) => void): void;
 }
 export type ResponseHeaders = RequestHeaders | HeaderCollection;
+export type TransportBody = string | Uint8Array;
+export type ResponseType = "text" | "binary";
 export interface TransportRequestOptions {
   readonly method: string;
   readonly headers?: RequestHeaders;
-  readonly body?: string;
+  readonly body?: TransportBody;
+  readonly responseType?: ResponseType;
   readonly signal?: AbortSignal;
   readonly timeoutMs?: number;
 }
-export interface TransportResponse { readonly status: number; readonly headers?: ResponseHeaders; text(): Promise<string>; }
+export interface TransportResponse {
+  readonly status: number;
+  readonly headers?: ResponseHeaders;
+  text(): Promise<string>;
+  arrayBuffer?: () => Promise<ArrayBuffer>;
+}
 
 /** Host boundary: SPFx, fetch, tests, or another authenticated runtime can implement it. */
 export interface RequestTransport { request(url: string, options: TransportRequestOptions): Promise<TransportResponse>; }
@@ -22,7 +30,8 @@ export interface DataRequest {
   readonly url: string;
   readonly method?: string;
   readonly headers?: RequestHeaders;
-  readonly body?: string;
+  readonly body?: TransportBody;
+  readonly responseType?: ResponseType;
   readonly signal?: AbortSignal;
   readonly timeoutMs?: number;
   /** Header names that participate in GET cache identity. Omitted means all supplied headers. */
