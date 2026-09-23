@@ -15,6 +15,20 @@ export interface GraphDriveItemMetadata { readonly id: string; readonly name?: s
 export interface GraphDriveItemUpdate { readonly name?: string; readonly description?: string; readonly fileSystemInfo?: { readonly createdDateTime?: string; readonly lastModifiedDateTime?: string }; readonly [key: string]: unknown; }
 export type GraphDriveRequestOptions = GraphRequestOptions;
 export interface GraphDriveWriteOptions extends GraphRequestOptions { readonly etag?: string; }
+export interface GraphSiteMetadata { readonly id: string; readonly name?: string; readonly displayName?: string; readonly webUrl?: string; readonly siteCollection?: unknown; readonly [key: string]: unknown; }
+export interface GraphListMetadata { readonly id: string; readonly name?: string; readonly displayName?: string; readonly webUrl?: string; readonly createdDateTime?: string; readonly lastModifiedDateTime?: string; readonly list?: unknown; readonly [key: string]: unknown; }
+export interface GraphListItem { readonly id: string; readonly fields?: Record<string, unknown>; readonly [key: string]: unknown; }
+export interface GraphListItemCreate { readonly fields: Readonly<Record<string, unknown>>; }
+export type GraphListItemUpdate = Readonly<Record<string, unknown>>;
+export interface GraphListQuery extends GraphIterationOptions, GraphRequestOptions {
+  readonly select?: readonly string[];
+  readonly expand?: readonly string[];
+  readonly filter?: string;
+  readonly orderBy?: string | readonly [string, boolean][];
+  readonly top?: number;
+}
+export type GraphSiteRequestOptions = GraphRequestOptions;
+export type GraphListWriteOptions = GraphRequestOptions;
 
 const jsonHeaders = { Accept: "application/json", "Content-Type": "application/json" };
 const batchMethods = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
@@ -50,6 +64,22 @@ const graphPath = (value: string): string[] => {
   return segments.map((segment) => graphSegment(segment, "Graph drive file path segment"));
 };
 const graphOptions = (options: GraphRequestOptions, accept = "application/json"): GraphRequestOptions => ({ ...options, headers: { Accept: accept, ...options.headers } });
+const graphQuery = (path: string, options: GraphListQuery): string => {
+  validateIteration(options);
+  if (options.top !== undefined && (!Number.isInteger(options.top) || options.top < 0)) throw new DataError("validation", "top must be a non-negative integer");
+  const values: string[] = [];
+  const add = (name: string, value: string | number): void => { values.push(`${name}=${encodeURIComponent(String(value)).replaceAll("'", "%27")}`); };
+  if (options.select?.length) add("$select", options.select.join(","));
+  if (options.expand?.length) add("$expand", options.expand.join(","));
+  if (options.filter) add("$filter", options.filter);
+  if (options.orderBy) {
+    const orders = typeof options.orderBy === "string" ? [[options.orderBy, true] as [string, boolean]] : options.orderBy;
+    add("$orderby", orders.map(([field, ascending]) => `${field} ${ascending ? "asc" : "desc"}`).join(","));
+  }
+  if (options.top !== undefined) add("$top", options.top);
+  return values.length === 0 ? path : `${path}?${values.join("&")}`;
+};
+const emptyGraphPage = <T>(): GraphPage<T> => ({ value: [] });
 
 export function graphDriveUrl(driveId: string): string { return `/drives/${graphSegment(driveId, "Graph drive id")}`; }
 export function graphDriveRootUrl(driveId: string): string { return `${graphDriveUrl(driveId)}/root`; }
@@ -57,6 +87,22 @@ export function graphDriveItemUrl(driveId: string, itemId: string): string { ret
 export function graphDriveChildrenUrl(driveId: string, itemId?: string): string { return `${itemId === undefined ? graphDriveRootUrl(driveId) : graphDriveItemUrl(driveId, itemId)}/children`; }
 export function graphDriveContentUrl(driveId: string, itemId: string): string { return `${graphDriveItemUrl(driveId, itemId)}/content`; }
 export function graphDriveUploadUrl(driveId: string, filePath: string): string { return `${graphDriveUrl(driveId)}/root:/${graphPath(filePath).join("/")}:/content`; }
+export function graphSiteUrl(siteId: string): string { return `/sites/${graphSegment(siteId, "Graph site id")}`; }
+export function graphSiteByPathUrl(hostname: string, sitePath: string): string {
+  if (typeof sitePath !== "string" || !sitePath.startsWith("/") || sitePath.includes("?") || sitePath.includes("#")) throw new DataError("validation", "Graph site path must be an absolute server-relative path");
+  let decoded: string;
+  try { decoded = decodeURIComponent(sitePath); } catch (cause) { throw new DataError("validation", "Graph site path encoding is invalid", cause); }
+  const encodedHostname = graphSegment(hostname, "Graph site hostname");
+  if (decoded === "/") return `/sites/${encodedHostname}:/`;
+  const segments = decoded.split("/");
+  if (segments.length > 1 && segments.some((segment, index) => index > 0 && segment.length === 0)) throw new DataError("validation", "Graph site path contains an empty segment");
+  return `/sites/${encodedHostname}:/${segments.slice(1).map((segment) => graphSegment(segment, "Graph site path segment")).join("/")}`;
+}
+export function graphSiteListsUrl(siteId: string): string { return `${graphSiteUrl(siteId)}/lists`; }
+export function graphListUrl(siteId: string, listId: string): string { return `${graphSiteListsUrl(siteId)}/${graphSegment(listId, "Graph list id")}`; }
+export function graphListItemsUrl(siteId: string, listId: string): string { return `${graphListUrl(siteId, listId)}/items`; }
+export function graphListItemUrl(siteId: string, listId: string, itemId: string): string { return `${graphListItemsUrl(siteId, listId)}/${graphSegment(itemId, "Graph list item id")}`; }
+export function graphListItemFieldsUrl(siteId: string, listId: string, itemId: string): string { return `${graphListItemUrl(siteId, listId, itemId)}/fields`; }
 
 export class GraphAdapter {
   private readonly baseUrl: string;
@@ -200,5 +246,52 @@ export class GraphDriveAdapter {
   }
   deleteItem(driveId: string, itemId: string, options: GraphDriveWriteOptions = {}): Promise<DataResult<void>> {
     return this.graph.request<void>(graphDriveItemUrl(driveId, itemId), { ...graphOptions(options), method: "DELETE" });
+  }
+}
+
+export class GraphSitesAdapter {
+  private readonly graph: GraphAdapter;
+  constructor(client: DataClient, options: GraphAdapterOptions = {}) { this.graph = new GraphAdapter(client, options); }
+
+  getSite(siteId: string, options: GraphSiteRequestOptions = {}): Promise<DataResult<GraphSiteMetadata>> {
+    return this.graph.request<GraphSiteMetadata>(graphSiteUrl(siteId), graphOptions(options));
+  }
+  getSiteByPath(hostname: string, sitePath: string, options: GraphSiteRequestOptions = {}): Promise<DataResult<GraphSiteMetadata>> {
+    return this.graph.request<GraphSiteMetadata>(graphSiteByPathUrl(hostname, sitePath), graphOptions(options));
+  }
+  listLists<T extends GraphListMetadata = GraphListMetadata>(siteId: string, options: GraphListQuery = {}): Promise<GraphPage<T>> {
+    const path = graphQuery(graphSiteListsUrl(siteId), options);
+    return options.top === 0 || options.maxPages === 0 || options.maxItems === 0 ? Promise.resolve(emptyGraphPage<T>()) : this.graph.page<T>(path, graphOptions(options));
+  }
+  listsPages<T extends GraphListMetadata = GraphListMetadata>(siteId: string, options: GraphListQuery = {}): AsyncIterable<GraphPage<T>> {
+    return this.graph.pages<T>(graphQuery(graphSiteListsUrl(siteId), options), graphOptions(options));
+  }
+  iterateLists<T extends GraphListMetadata = GraphListMetadata>(siteId: string, options: GraphListQuery = {}): AsyncIterable<T> {
+    return this.graph.iterate<T>(graphQuery(graphSiteListsUrl(siteId), options), graphOptions(options));
+  }
+  getList<T extends GraphListMetadata = GraphListMetadata>(siteId: string, listId: string, options: GraphListQuery = {}): Promise<DataResult<T>> {
+    return this.graph.request<T>(graphQuery(graphListUrl(siteId, listId), options), graphOptions(options));
+  }
+  listItems<T extends GraphListItem = GraphListItem>(siteId: string, listId: string, options: GraphListQuery = {}): Promise<GraphPage<T>> {
+    const path = graphQuery(graphListItemsUrl(siteId, listId), options);
+    return options.top === 0 || options.maxPages === 0 || options.maxItems === 0 ? Promise.resolve(emptyGraphPage<T>()) : this.graph.page<T>(path, graphOptions(options));
+  }
+  itemsPages<T extends GraphListItem = GraphListItem>(siteId: string, listId: string, options: GraphListQuery = {}): AsyncIterable<GraphPage<T>> {
+    return this.graph.pages<T>(graphQuery(graphListItemsUrl(siteId, listId), options), graphOptions(options));
+  }
+  iterateItems<T extends GraphListItem = GraphListItem>(siteId: string, listId: string, options: GraphListQuery = {}): AsyncIterable<T> {
+    return this.graph.iterate<T>(graphQuery(graphListItemsUrl(siteId, listId), options), graphOptions(options));
+  }
+  getItem<T extends GraphListItem = GraphListItem>(siteId: string, listId: string, itemId: string, options: GraphListQuery = {}): Promise<DataResult<T>> {
+    return this.graph.request<T>(graphQuery(graphListItemUrl(siteId, listId, itemId), options), graphOptions(options));
+  }
+  createItem<T extends GraphListItem = GraphListItem>(siteId: string, listId: string, input: GraphListItemCreate, options: GraphListWriteOptions = {}): Promise<DataResult<T>> {
+    return this.graph.request<T>(graphListItemsUrl(siteId, listId), { ...graphOptions(options), method: "POST", body: input });
+  }
+  updateItem<T extends Record<string, unknown> = Record<string, unknown>>(siteId: string, listId: string, itemId: string, input: GraphListItemUpdate, options: GraphListWriteOptions = {}): Promise<DataResult<T>> {
+    return this.graph.request<T>(graphListItemFieldsUrl(siteId, listId, itemId), { ...graphOptions(options), method: "PATCH", body: input });
+  }
+  deleteItem(siteId: string, listId: string, itemId: string, options: GraphListWriteOptions = {}): Promise<DataResult<void>> {
+    return this.graph.request<void>(graphListItemUrl(siteId, listId, itemId), { ...graphOptions(options), method: "DELETE" });
   }
 }

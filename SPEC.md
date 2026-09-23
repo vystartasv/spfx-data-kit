@@ -1,7 +1,7 @@
 # spfx-data-kit
 
 §G
-Dependency-free TypeScript ESM library for injected request transport, typed SharePoint REST data access, and Microsoft Graph JSON batch results.
+Dependency-free TypeScript ESM library for injected request transport, typed SharePoint REST data access, typed Microsoft Graph sites/lists/list items, and Microsoft Graph JSON batch results.
 
 §C
 - TypeScript; Node 22; ESM
@@ -22,6 +22,7 @@ Dependency-free TypeScript ESM library for injected request transport, typed Sha
 - SharePoint: `SharePointRestAdapter`, URL helpers, CRUD/query/ETag/batch types
 - SharePoint files: `SharePointFilesAdapter`, file/folder/attachment URL helpers, metadata, binary download, bounded upload types
 - Graph: `GraphAdapter`, `GraphDriveAdapter`, request/page/delta/batch/drive/file option/result types
+- Graph sites/lists: `GraphSitesAdapter`, site/list/item URL helpers, typed metadata/item/query/write types
 - Manifest: `capabilityManifest`, `CAPABILITY_MANIFEST`
 
 §V
@@ -46,6 +47,9 @@ V18: Folder children → one expanded GET; upload/download ⊥ automatic follow-
 V19: Graph drive/file URL helpers → relative Graph paths; drive/item ids & upload path segments validated before transport.
 V20: Graph drive/root/item reads, children pages, upload, update, delete → preserve baseUrl, response ETags, `AbortSignal`, and `timeoutMs`; upload/download → `Uint8Array`; simple upload >1_500_000 → reject before transport.
 V21: Graph drive children iteration → reuse bounded page/iteration limits; no request after `maxPages`, `maxItems`, repeated link, or final page.
+V22: Graph site/list/item URL helpers → relative paths; ids, hostnames, and site paths validate before transport; query values URL-escaped.
+V23: Graph site/list reads → reuse `GraphAdapter` page/iteration primitives; select, expand, filter, orderBy, top, `maxPages`, `maxItems`, and next links preserve bounds.
+V24: Graph site/list item writes → POST/PATCH/DELETE with typed JSON bodies, optional `If-Match`, forwarded `AbortSignal`/`timeoutMs`, response ETags, and no follow-up reads.
 
 §T
 id|status|task|cites
@@ -58,6 +62,9 @@ T6|x|add PnP capability matrix and Graph page/delta iteration|V9,V13
 T7|x|forward cancellation/deadline options and retain structured HTTP error details|V11,V12
 T8|x|add binary transport, typed SharePoint files/folders/attachments, bounded uploads|V14-V18
 T9|x|add typed Graph drive/file metadata, bounded children paging, binary transfer, ETag writes, and explicit planned boundaries|V1,V11,V13,V14,V19-V21,I.api
+T10|x|add typed Graph sites/lists/list-item helpers, bounded queries, ETag writes, tests, and capability status|V1,V11,V13,V22-V24,I.api
 
 §B
 id|date|cause|fix
+B1|2026-09-23|query helper void callback returned `Array.push` number|mechanical type fix
+B2|2026-09-23|async assertion used for synchronously validated Graph query|test assertion fix

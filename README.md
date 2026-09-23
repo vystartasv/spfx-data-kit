@@ -5,7 +5,7 @@
 Authentication, authorization, URL discovery, and network access remain with the host through `RequestTransport`.
 
 ```ts
-import { DataClient, GraphAdapter, GraphDriveAdapter } from "spfx-data-kit";
+import { DataClient, GraphAdapter, GraphDriveAdapter, GraphSitesAdapter } from "spfx-data-kit";
 
 const client = new DataClient(transport, {
   retry: { maxRetries: 2 },
@@ -16,6 +16,8 @@ const graph = new GraphAdapter(client);
 const result = await graph.request<{ id: string }>("/me");
 const drive = new GraphDriveAdapter(client);
 const bytes = await drive.downloadFile("drive-id", "item-id");
+const sites = new GraphSitesAdapter(client);
+const site = await sites.getSite("site-id");
 ```
 
 The root export includes:
@@ -28,6 +30,7 @@ The root export includes:
 - `SharePointFilesAdapter` for site-scoped file/folder metadata, one-request folder children, binary downloads, bounded small uploads (≤1,500,000 bytes), and list-item attachment metadata/download/upload/delete;
 - `GraphAdapter` for Graph requests with cached/deduplicated GETs, response-header ETags, page/delta parsing, bounded async iteration, and JSON batch result parsing;
 - `GraphDriveAdapter` for typed drive/root/item metadata, bounded children paging, binary file download, ETag-aware item update/delete, and bounded simple `Uint8Array` uploads (≤1,500,000 bytes);
+- `GraphSitesAdapter` for typed site-by-id/path and list metadata, OData list/item queries, bounded paging, list-item CRUD, response ETags, and optional `If-Match` writes without follow-up reads;
 - transport `AbortSignal`/host-enforced timeout forwarding and structured service error details without changing `DataError.kind`;
 - `capabilityManifest` and `CAPABILITY_MANIFEST`.
 
@@ -44,4 +47,4 @@ npm run pack
 
 The package does not provide authentication, authorization, tenant discovery, persistent storage, offline storage, UI components, or network access.
 
-Graph resumable uploads, thumbnails, previews, permissions, broader Graph service families, large/resumable SharePoint uploads, provisioning, pages, navigation, profiles, search, taxonomy, and other PnP wrapper families remain planned or excluded; see [docs/pnp-parity.md](docs/pnp-parity.md).
+Graph resumable uploads, thumbnails, previews, permissions, Graph groups/admin/provisioning/pages/navigation/profiles/search/taxonomy, broader Graph service families, large/resumable SharePoint uploads, and other PnP wrapper families remain planned or excluded; see [docs/pnp-parity.md](docs/pnp-parity.md).
