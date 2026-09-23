@@ -16,6 +16,24 @@ export interface SharePointBatchResponse { readonly id?: string; readonly status
 export interface SharePointBatchResult { readonly responses: readonly SharePointBatchResponse[]; readonly failures: readonly SharePointBatchResponse[]; }
 export interface SharePointRequestOptions { readonly signal?: AbortSignal; readonly timeoutMs?: number; }
 export interface SharePointWriteOptions extends SharePointRequestOptions { readonly etag?: string; }
+export interface SharePointSearchSort { readonly property: string; readonly direction?: "ascending" | "descending"; }
+export interface SharePointSearchRequest extends SharePointRequestOptions {
+  readonly queryText: string;
+  readonly selectProperties?: readonly string[];
+  readonly refiners?: readonly string[];
+  readonly sort?: readonly SharePointSearchSort[];
+  readonly rowLimit?: number;
+  readonly startRow?: number;
+  readonly maxPages?: number;
+}
+export interface SharePointSearchResult<TRow = Row> {
+  readonly data: readonly TRow[];
+  readonly totalRows: number;
+  readonly startRow: number;
+  readonly rowLimit: number;
+  readonly nextPage?: string;
+}
+export interface SharePointSearchOptions { readonly siteUrl: string; }
 export interface SharePointFileMetadata { readonly Name: string; readonly ServerRelativeUrl: string; readonly Length?: number; readonly TimeCreated?: string; readonly TimeLastModified?: string; readonly UniqueId?: string; readonly [key: string]: unknown; }
 export interface SharePointFolderMetadata { readonly Name: string; readonly ServerRelativeUrl: string; readonly ItemCount?: number; readonly TimeCreated?: string; readonly TimeLastModified?: string; readonly UniqueId?: string; readonly [key: string]: unknown; }
 export interface SharePointAttachmentMetadata { readonly FileName: string; readonly ServerRelativeUrl: string; readonly TimeLastModified?: string; readonly UniqueId?: string; readonly [key: string]: unknown; }
@@ -59,6 +77,44 @@ function fileName(value: string): string {
   return odataString(value);
 }
 function resourcePath(siteUrl: string, value: string): string { return `'${encodedServerRelativePath(siteUrl, value)}'`; }
+
+function validateSearchRequest(request: SharePointSearchRequest): void {
+  if (typeof request.queryText !== "string" || request.queryText.trim() === "") throw new DataError("validation", "SharePoint search queryText must be a non-empty string");
+  for (const [name, values] of [["selectProperties", request.selectProperties], ["refiners", request.refiners]] as const) {
+    if (values?.some((value) => typeof value !== "string" || value.trim() === "")) throw new DataError("validation", `SharePoint search ${name} must contain non-empty strings`);
+  }
+  if (request.sort?.some((sort) => typeof sort.property !== "string" || sort.property.trim() === "" || (sort.direction !== undefined && sort.direction !== "ascending" && sort.direction !== "descending"))) throw new DataError("validation", "SharePoint search sort entries are invalid");
+  if (request.rowLimit !== undefined && (!Number.isInteger(request.rowLimit) || request.rowLimit < 1)) throw new DataError("validation", "SharePoint search rowLimit must be a positive integer");
+  if (request.startRow !== undefined && (!Number.isInteger(request.startRow) || request.startRow < 0 || request.startRow > 50_000)) throw new DataError("validation", "SharePoint search startRow must be a non-negative integer no greater than 50000");
+  if (request.maxPages !== undefined && (!Number.isInteger(request.maxPages) || request.maxPages < 0)) throw new DataError("validation", "SharePoint search maxPages must be a non-negative integer");
+}
+function searchBody(request: SharePointSearchRequest, startRow: number): Row {
+  return {
+    __metadata: { type: "Microsoft.Office.Server.Search.REST.SearchRequest" },
+    Querytext: request.queryText,
+    ...(request.selectProperties?.length ? { SelectProperties: { results: [...request.selectProperties] } } : {}),
+    ...(request.refiners?.length ? { Refiners: request.refiners.join(",") } : {}),
+    ...(request.sort?.length ? { SortList: { results: request.sort.map(({ property, direction }) => ({ Property: property, Direction: direction === "descending" ? "1" : "0" })) } } : {}),
+    ...(request.rowLimit === undefined ? {} : { RowLimit: request.rowLimit }),
+    ...(startRow === 0 && request.startRow === undefined ? {} : { StartRow: startRow }),
+  };
+}
+function searchRows(value: unknown, request: SharePointSearchRequest): SharePointSearchResult {
+  const root = asRow(value);
+  const d = asRow(root.d);
+  const query = asRow(root.query ?? d.query ?? root);
+  const primary = asRow(query.PrimaryQueryResult ?? root.PrimaryQueryResult);
+  const relevant = asRow(primary.RelevantResults ?? query.RelevantResults ?? root.RelevantResults);
+  const table = asRow(relevant.Table);
+  const rowsValue = asRow(table.Rows).results ?? table.Rows;
+  const data = Array.isArray(rowsValue) ? rowsValue : [];
+  const totalRows = typeof relevant.TotalRows === "number" && Number.isInteger(relevant.TotalRows) ? relevant.TotalRows : 0;
+  const startRow = request.startRow ?? 0;
+  const rowLimit = request.rowLimit ?? Math.max(data.length, 10);
+  const nextPage = [root["@odata.nextLink"], root["odata.nextLink"], relevant["@odata.nextLink"], relevant["odata.nextLink"], relevant.PagingInfo]
+    .find((value): value is string => typeof value === "string" && value.length > 0);
+  return { data, totalRows, startRow, rowLimit, ...(nextPage === undefined ? {} : { nextPage }) };
+}
 
 export function sharePointFileUrl(siteUrl: string, serverRelativeUrl: string): string {
   return `${sitePath(siteUrl).base}/_api/web/GetFileByServerRelativeUrl(${resourcePath(siteUrl, serverRelativeUrl)})`;
@@ -223,6 +279,64 @@ export class SharePointRestAdapter<TEntity = Row, TCreate = Partial<TEntity>, TU
     lines.push(`--${boundary}--`, "");
     const response = await this.client.requestRaw({ url: `${this.options.siteUrl.replace(/\/+$/, "")}/_api/$batch`, method: "POST", headers: { Accept: jsonAccept, "Content-Type": `multipart/mixed; boundary=${boundary}` }, body: lines.join("\r\n") });
     return parseBatchResponse(response.text, headerValue(response.headers, "content-type"), requests);
+  }
+}
+
+export class SharePointSearchAdapter {
+  private readonly url: string;
+  constructor(private readonly client: DataClient, options: SharePointSearchOptions) {
+    this.url = `${sitePath(options.siteUrl).base}/_api/search/query`;
+  }
+
+  private async page<T>(request: SharePointSearchRequest, startRow: number, nextPage?: string): Promise<SharePointSearchResult<T>> {
+    const controls = { signal: request.signal, timeoutMs: request.timeoutMs };
+    const isUrl = nextPage !== undefined && (/^[a-z][a-z\d+.-]*:/i.test(nextPage) || nextPage.startsWith("/") || nextPage.startsWith("?"));
+    const response = nextPage !== undefined && isUrl
+      ? await this.client.requestRaw({ url: /^[a-z][a-z\d+.-]*:/i.test(nextPage) ? nextPage : new URL(nextPage, this.url).toString(), method: "GET", headers: { Accept: jsonAccept }, ...controls })
+      : await this.client.requestRaw({ url: this.url, method: "POST", headers: { Accept: jsonAccept, "Content-Type": "application/json;odata=nometadata" }, body: JSON.stringify(searchBody(request, startRow)), ...controls });
+    return searchRows(parseJson<unknown>(response.text, response.status), { ...request, startRow }) as SharePointSearchResult<T>;
+  }
+
+  async searchPage<T = Row>(request: SharePointSearchRequest): Promise<SharePointSearchResult<T>> {
+    validateSearchRequest(request);
+    return this.page<T>(request, request.startRow ?? 0);
+  }
+
+  async *pages<T = Row>(request: SharePointSearchRequest): AsyncIterable<SharePointSearchResult<T>> {
+    validateSearchRequest(request);
+    const maxPages = request.maxPages ?? 100;
+    let pageCount = 0;
+    let startRow = request.startRow ?? 0;
+    let nextPage: string | undefined;
+    const seen = new Set<string>();
+    while (pageCount < maxPages) {
+      const marker = nextPage ?? String(startRow);
+      if (seen.has(marker)) break;
+      seen.add(marker);
+      const page = await this.page<T>(request, startRow, nextPage);
+      pageCount++;
+      yield page;
+      if (!page.nextPage) break;
+      nextPage = page.nextPage;
+      startRow = page.startRow + page.data.length;
+    }
+  }
+
+  async search<T = Row>(request: SharePointSearchRequest): Promise<SharePointSearchResult<T>> {
+    validateSearchRequest(request);
+    if (request.maxPages === 0) return { data: [], totalRows: 0, startRow: request.startRow ?? 0, rowLimit: request.rowLimit ?? 10 };
+    const data: T[] = [];
+    let totalRows = 0;
+    const startRow = request.startRow ?? 0;
+    let rowLimit = request.rowLimit ?? 10;
+    let nextPage: string | undefined;
+    for await (const page of this.pages<T>(request)) {
+      data.push(...page.data);
+      totalRows = page.totalRows;
+      rowLimit = page.rowLimit;
+      nextPage = page.nextPage;
+    }
+    return { data, totalRows, startRow, rowLimit, ...(nextPage === undefined ? {} : { nextPage }) };
   }
 }
 

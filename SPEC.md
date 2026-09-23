@@ -1,7 +1,7 @@
 # spfx-data-kit
 
 §G
-Dependency-free TypeScript ESM library for injected request transport, typed SharePoint REST data access, typed Microsoft Graph directory/sites/lists/list items, and Microsoft Graph JSON batch results.
+Dependency-free TypeScript ESM library for injected request transport, typed SharePoint REST search/data access, typed Microsoft Graph search/directory/sites/lists/list items, and Microsoft Graph JSON batch results.
 
 §C
 - TypeScript; Node 22; ESM
@@ -21,7 +21,9 @@ Dependency-free TypeScript ESM library for injected request transport, typed Sha
 - Client: `DataClient`, `requestCacheKey`, cache/retry/diagnostic option types
 - SharePoint: `SharePointRestAdapter`, URL helpers, CRUD/query/ETag/batch types
 - SharePoint files: `SharePointFilesAdapter`, file/folder/attachment URL helpers, metadata, binary download, bounded upload types
+- SharePoint search: `SharePointSearchAdapter`, typed query/select/refiner/sort/row contracts, totals, bounded paging
 - Graph: `GraphAdapter`, `GraphDriveAdapter`, request/page/delta/batch/drive/file option/result types
+- Graph search: `GraphSearchAdapter`, typed entity/query/field/sort/page/hit contracts, bounded paging
 - Graph sites/lists: `GraphSitesAdapter`, site/list/item URL helpers, typed metadata/item/query/write types
 - Graph directory: `GraphDirectoryAdapter`, user/group/member URL helpers, typed metadata/query/write types
 - Manifest: `capabilityManifest`, `CAPABILITY_MANIFEST`
@@ -54,6 +56,10 @@ V24: Graph site/list item writes → POST/PATCH/DELETE with typed JSON bodies, o
 V25: Graph directory URL helpers → relative paths; user/group/member/directory-object identifiers validate as single path segments before transport; query values URL-escaped.
 V26: Graph directory reads → current user, user, group, and group-member collections preserve response ETags, forwarded `AbortSignal`/`timeoutMs`, select/filter/orderBy/top, bounded paging, and no request after `maxPages`/`maxItems`/final page.
 V27: Graph directory membership writes → POST `groups/{id}/members/$ref` with Graph `@odata.id` body or DELETE `groups/{id}/members/{id}/$ref`; preserve ETags and controls; no follow-up reads; child HTTP failures remain visible.
+V28: SharePoint search req → POST `/_api/search/query` with typed query/select/refiners/sort/row bounds; JSON body safe; controls forwarded; service errors structured.
+V29: SharePoint search paging → map `PrimaryQueryResult.RelevantResults` rows/`TotalRows`; follow exposed next page ≤ `maxPages`; ⊥ request after bound/repeated marker.
+V30: Graph search req → POST `/search/query` with ≥1 entity type, query text, optional fields/sort, bounded `from`/`size`; controls/errors preserve Graph behavior.
+V31: Graph search paging → map `hitsContainers` hits/total/more-results; no request after `maxPages`/`maxItems`/no-more/repeated offset; no ranking/semantic claims.
 
 §T
 id|status|task|cites
@@ -68,6 +74,7 @@ T8|x|add binary transport, typed SharePoint files/folders/attachments, bounded u
 T9|x|add typed Graph drive/file metadata, bounded children paging, binary transfer, ETag writes, and explicit planned boundaries|V1,V11,V13,V14,V19-V21,I.api
 T10|x|add typed Graph sites/lists/list-item helpers, bounded queries, ETag writes, tests, and capability status|V1,V11,V13,V22-V24,I.api
 T11|x|add typed Graph users/groups/directory membership helpers, bounded queries, ref writes, tests, docs, and capability status|V1,V11,V13,V25-V27,I.api
+T12|x|add typed SharePoint and Graph search helpers, bounded paging, validation, tests, docs, manifest, and capability status|V1,V2,V5,V11,V12,V28-V31,I.api
 
 §B
 id|date|cause|fix

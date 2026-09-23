@@ -36,6 +36,30 @@ export interface GraphDirectoryQuery extends GraphIterationOptions, GraphRequest
   readonly orderBy?: string | readonly [string, boolean][];
   readonly top?: number;
 }
+export interface GraphSearchSortProperty { readonly name: string; readonly isDescending?: boolean; }
+export interface GraphSearchRequest extends GraphIterationOptions, GraphRequestOptions {
+  readonly entityTypes: readonly string[];
+  readonly queryText: string;
+  readonly fields?: readonly string[];
+  readonly from?: number;
+  readonly size?: number;
+  readonly sortProperties?: readonly GraphSearchSortProperty[];
+}
+export interface GraphSearchHit<T = unknown> {
+  readonly hitId: string;
+  readonly rank?: number;
+  readonly summary?: string;
+  readonly resource?: T;
+  readonly resultTemplateId?: string;
+  readonly [key: string]: unknown;
+}
+export interface GraphSearchResult<T = unknown> {
+  readonly data: readonly GraphSearchHit<T>[];
+  readonly total: number;
+  readonly moreResultsAvailable: boolean;
+  readonly from: number;
+  readonly size: number;
+}
 export type GraphDirectoryRequestOptions = GraphDirectoryQuery;
 export type GraphDirectoryWriteOptions = GraphRequestOptions;
 export type GraphSiteRequestOptions = GraphRequestOptions;
@@ -91,6 +115,35 @@ const graphQuery = (path: string, options: GraphListQuery | GraphDirectoryQuery)
   return values.length === 0 ? path : `${path}?${values.join("&")}`;
 };
 const emptyGraphPage = <T>(): GraphPage<T> => ({ value: [] });
+const validateSearch = (request: GraphSearchRequest): void => {
+  if (!Array.isArray(request.entityTypes) || request.entityTypes.length === 0 || request.entityTypes.some((type) => typeof type !== "string" || type.trim() === "")) throw new DataError("validation", "Graph search entityTypes must contain at least one non-empty string");
+  if (typeof request.queryText !== "string" || request.queryText.trim() === "") throw new DataError("validation", "Graph search queryText must be a non-empty string");
+  if (request.fields?.some((field) => typeof field !== "string" || field.trim() === "")) throw new DataError("validation", "Graph search fields must contain non-empty strings");
+  if (request.sortProperties?.some((property) => typeof property.name !== "string" || property.name.trim() === "" || (property.isDescending !== undefined && typeof property.isDescending !== "boolean"))) throw new DataError("validation", "Graph search sortProperties are invalid");
+  validateIteration(request);
+  for (const [name, value] of [["from", request.from], ["size", request.size]] as const) {
+    if (value !== undefined && (!Number.isInteger(value) || value < (name === "from" ? 0 : 1) || (name === "size" && value > 1000))) throw new DataError("validation", `Graph search ${name} is out of bounds`);
+  }
+};
+const searchRequestBody = (request: GraphSearchRequest, from: number, size: number): Record<string, unknown> => ({
+  requests: [{
+    entityTypes: [...request.entityTypes],
+    query: { queryString: request.queryText },
+    ...(request.fields?.length ? { fields: [...request.fields] } : {}),
+    from,
+    size,
+    ...(request.sortProperties?.length ? { sortProperties: request.sortProperties.map(({ name, isDescending }) => ({ name, ...(isDescending === undefined ? {} : { isDescending }) })) } : {}),
+  }],
+});
+const searchResult = <T>(value: unknown, from: number, size: number): GraphSearchResult<T> => {
+  const root = asRecord(value);
+  const response = Array.isArray(root.value) ? asRecord(root.value[0]) : {};
+  const containers = Array.isArray(response.hitsContainers) ? response.hitsContainers.map(asRecord) : [];
+  const data = containers.flatMap((container) => Array.isArray(container.hits) ? container.hits as GraphSearchHit<T>[] : []);
+  const total = containers.reduce((sum, container) => sum + (typeof container.total === "number" && Number.isInteger(container.total) ? container.total : 0), 0);
+  const moreResultsAvailable = containers.some((container) => container.moreResultsAvailable === true);
+  return { data, total, moreResultsAvailable, from, size };
+};
 
 export function graphDriveUrl(driveId: string): string { return `/drives/${graphSegment(driveId, "Graph drive id")}`; }
 export function graphDriveRootUrl(driveId: string): string { return `${graphDriveUrl(driveId)}/root`; }
@@ -209,6 +262,63 @@ export class GraphAdapter {
     });
     if (responseIds.size !== ids.size) throw new DataError("unknown", "Graph batch response did not contain every child response", payload, response.status);
     return { responses, failures: responses.filter((item) => !item.ok) };
+  }
+}
+
+export class GraphSearchAdapter {
+  private readonly graph: GraphAdapter;
+  constructor(client: DataClient, options: GraphAdapterOptions = {}) { this.graph = new GraphAdapter(client, options); }
+
+  async searchPage<T = unknown>(request: GraphSearchRequest): Promise<GraphSearchResult<T>> {
+    validateSearch(request);
+    const from = request.from ?? 0;
+    const size = Math.min(request.size ?? 25, request.maxItems ?? Number.MAX_SAFE_INTEGER);
+    if (request.maxItems === 0) return { data: [], total: 0, moreResultsAvailable: false, from, size };
+    const result = await this.graph.request<unknown>("/search/query", {
+      method: "POST",
+      headers: request.headers,
+      body: searchRequestBody(request, from, size),
+      signal: request.signal,
+      timeoutMs: request.timeoutMs,
+    });
+    return searchResult<T>(result.data, from, size);
+  }
+
+  async *pages<T = unknown>(request: GraphSearchRequest): AsyncIterable<GraphSearchResult<T>> {
+    validateSearch(request);
+    const maxPages = request.maxPages ?? 100;
+    const maxItems = request.maxItems ?? Number.MAX_SAFE_INTEGER;
+    if (maxPages === 0 || maxItems === 0) return;
+    const seen = new Set<number>();
+    let from = request.from ?? 0;
+    let count = 0;
+    let pageCount = 0;
+    while (pageCount < maxPages && count < maxItems && !seen.has(from)) {
+      seen.add(from);
+      const page = await this.searchPage<T>({ ...request, from, maxItems: Math.min(maxItems - count, request.size ?? 25) });
+      pageCount++;
+      const data = page.data.slice(0, maxItems - count);
+      count += data.length;
+      yield data.length === page.data.length ? page : { ...page, data };
+      if (!page.moreResultsAvailable || page.data.length === 0) break;
+      from += page.data.length;
+    }
+  }
+
+  async search<T = unknown>(request: GraphSearchRequest): Promise<GraphSearchResult<T>> {
+    validateSearch(request);
+    const from = request.from ?? 0;
+    const size = Math.min(request.size ?? 25, request.maxItems ?? Number.MAX_SAFE_INTEGER);
+    if (request.maxPages === 0 || request.maxItems === 0) return { data: [], total: 0, moreResultsAvailable: false, from, size };
+    const data: GraphSearchHit<T>[] = [];
+    let total = 0;
+    let moreResultsAvailable = false;
+    for await (const page of this.pages<T>(request)) {
+      data.push(...page.data);
+      total = page.total;
+      moreResultsAvailable = page.moreResultsAvailable;
+    }
+    return { data, total, moreResultsAvailable, from, size };
   }
 }
 
